@@ -25,6 +25,7 @@
 -export([compressible_att_type/1]).
 -export([get_value/2, get_value/3]).
 -export([md5/1, md5_init/0, md5_update/2, md5_final/1]).
+-export([file_exists/2]).
 
 -include("couch_db.hrl").
 -include_lib("kernel/include/file.hrl").
@@ -429,3 +430,17 @@ md5_update(Ctx, D) ->
 -spec md5_final(Context::binary()) -> Digest::binary().
 md5_final(Ctx) ->
     try crypto:md5_final(Ctx) catch error:_ -> erlang:md5_final(Ctx) end.
+
+-spec file_exists(FileName::string(), Directories::dir_list()) ->
+    {ok, FullPath::string()} | not_found.
+-type dir_list() :: [ string() ].
+file_exists(_FileName, []) ->
+    not_found;
+file_exists(FileName, [Dir | RestDirs]) ->
+    FullPath = filename:join([Dir, FileName]),
+    case file:read_file_info(FullPath) of
+    {ok, _FileInfo} ->
+        {ok, FullPath};
+    {error, enoent} ->
+        file_exists(FileName, RestDirs)
+    end.

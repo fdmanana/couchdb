@@ -171,7 +171,7 @@ handle_cast({compact_done, CompactFilepath}, #db{filepath=Filepath}=Db) ->
         ?LOG_DEBUG("CouchDB swapping files ~s and ~s.",
                 [Filepath, CompactFilepath]),
         file:delete(Filepath),
-        ok = file:rename(CompactFilepath, Filepath),
+        ok = rename_compact_file(CompactFilepath),
         close_db(Db),
         ok = gen_server:call(Db#db.main_pid, {db_updated, NewDb2}),
         ?LOG_INFO("Compaction for db \"~s\" completed.", [Db#db.name]),
@@ -181,7 +181,7 @@ handle_cast({compact_done, CompactFilepath}, #db{filepath=Filepath}=Db) ->
             "(update seq=~p. compact update seq=~p). Retrying.",
             [Db#db.update_seq, NewSeq]),
         close_db(NewDb),
-        Pid = spawn_link(fun() -> start_copy_compact(Db) end),
+        Pid = spawn_link(fun() -> start_copy_compact(Db, CompactFilepath) end),
         Db2 = Db#db{compactor_pid=Pid},
         {noreply, Db2}
     end.
@@ -841,8 +841,10 @@ copy_compact(Db, NewDb0, Retry) ->
 
     commit_data(NewDb4#db{update_seq=Db#db.update_seq}).
 
-start_copy_compact(#db{name=Name,filepath=Filepath}=Db) ->
-    CompactFile = Filepath ++ ".compact",
+start_copy_compact(#db{filepath=Filepath}=Db) ->
+    start_copy_compact(Db, get_compact_file(Filepath)).
+
+start_copy_compact(#db{name=Name}=Db, CompactFile) ->
     ?LOG_DEBUG("Compaction process spawned for db \"~s\"", [Name]),
     case couch_file:open(CompactFile) of
     {ok, Fd} ->
@@ -861,3 +863,14 @@ start_copy_compact(#db{name=Name,filepath=Filepath}=Db) ->
     close_db(NewDb2),
     gen_server:cast(Db#db.update_pid, {compact_done, CompactFile}).
 
+get_compact_file(DbFile) ->
+    filename:join(
+        [couch_server:get_db_path(), filename:basename(DbFile) ++ ".compact"]
+    ).
+
+rename_compact_file(CompactFile) ->
+    NewDbFile = filename:join([
+        filename:dirname(CompactFile),
+        filename:basename(CompactFile, ".compact")
+    ]),
+    ok = file:rename(CompactFile, NewDbFile).

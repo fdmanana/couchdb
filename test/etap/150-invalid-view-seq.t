@@ -43,6 +43,9 @@ main(_) ->
 %%
 test() ->
     couch_server_sup:start_link([default_config()]),
+    couch_config:set(
+        "couchdb", "database_dirs", test_util:build_file("tmp/lib")
+    ),
     timer:sleep(1000),
     delete_db(),
     create_db(),

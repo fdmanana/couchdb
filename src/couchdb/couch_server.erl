@@ -17,11 +17,13 @@
 -export([init/1, handle_call/3,sup_start_link/0]).
 -export([handle_cast/2,code_change/3,handle_info/2,terminate/2]).
 -export([dev_start/0,is_admin/2,has_admins/0,get_stats/0]).
+-export([get_db_path/0]).
 
 -include("couch_db.hrl").
 
 -record(server,{
-    root_dir = [],
+    root_dirs = [""], % one or more dirs
+    next_db_dir_idx = 0,
     dbname_regexp,
     max_dbs_open=100,
     dbs_open=0,
@@ -46,6 +48,10 @@ get_stats() ->
     {ok, #server{start_time=Time,dbs_open=Open}} =
             gen_server:call(couch_server, get_server),
     [{start_time, ?l2b(Time)}, {dbs_open, Open}].
+
+get_db_path() ->
+    {ok, Path} = gen_server:call(couch_server, db_path),
+    Path.
 
 sup_start_link() ->
     gen_server:start_link({local, couch_server}, couch_server, [], []).
@@ -95,8 +101,20 @@ is_admin(User, ClearPwd) ->
 has_admins() ->
     couch_config:get("admins") /= [].
 
-get_full_filename(Server, DbName) ->
-    filename:join([Server#server.root_dir, "./" ++ DbName ++ ".couch"]).
+get_full_filename(#server{root_dirs = RootDirs} = Server, DbName) ->
+    DbFile = DbName ++ ".couch",
+    case couch_util:file_exists(DbFile, RootDirs) of
+    {ok, FullPath} ->
+        FullPath;
+    not_found ->
+        filename:join([db_path(Server), DbFile])
+    end.
+
+db_path(#server{root_dirs = RootDirs, next_db_dir_idx = DirIdx}) ->
+    lists:nth(1 + DirIdx, RootDirs).
+
+update_db_path_idx(#server{root_dirs = Dirs, next_db_dir_idx = Idx} = Server) ->
+    Server#server{next_db_dir_idx = (Idx + 1) rem length(Dirs)}.
 
 hash_admin_passwords() ->
     hash_admin_passwords(true).
@@ -118,12 +136,16 @@ init([]) ->
     % just stop if one of the config settings change. couch_server_sup
     % will restart us and then we will pick up the new settings.
 
-    RootDir = couch_config:get("couchdb", "database_dir", "."),
+    RootDirs = re:split(
+        couch_config:get("couchdb", "database_dirs", "."),
+        ", ?",
+        [{return, list}]
+    ),
     MaxDbsOpen = list_to_integer(
             couch_config:get("couchdb", "max_dbs_open")),
     Self = self(),
     ok = couch_config:register(
-        fun("couchdb", "database_dir") ->
+        fun("couchdb", "database_dirs") ->
             exit(Self, config_change)
         end),
     ok = couch_config:register(
@@ -142,7 +164,7 @@ init([]) ->
     ets:new(couch_dbs_by_pid, [set, private, named_table]),
     ets:new(couch_dbs_by_lru, [ordered_set, private, named_table]),
     process_flag(trap_exit, true),
-    {ok, #server{root_dir=RootDir,
+    {ok, #server{root_dirs=RootDirs,
                 dbname_regexp=RegExp,
                 max_dbs_open=MaxDbsOpen,
                 start_time=httpd_util:rfc1123_date()}}.
@@ -153,20 +175,31 @@ terminate(_Reason, _Srv) ->
     ok.
 
 all_databases() ->
-    {ok, #server{root_dir=Root}} = gen_server:call(couch_server, get_server),
-    NormRoot = couch_util:normpath(Root),
-    Filenames =
-    filelib:fold_files(Root, "^[a-z0-9\\_\\$()\\+\\-]*[\\.]couch$", true,
-        fun(Filename, AccIn) ->
-            NormFilename = couch_util:normpath(Filename),
-            case NormFilename -- NormRoot of
-            [$/ | RelativeFilename] -> ok;
-            RelativeFilename -> ok
-            end,
-            [list_to_binary(filename:rootname(RelativeFilename, ".couch")) | AccIn]
-        end, []),
-    {ok, Filenames}.
-
+    {ok, #server{root_dirs=Roots}} = gen_server:call(couch_server, get_server),
+    FilenameList = lists:foldr(
+        fun(Root, Acc) ->
+            NormRoot = couch_util:normpath(Root),
+            Acc ++ filelib:fold_files(
+                Root,
+                "^[a-z0-9\\_\\$()\\+\\-]*[\\.]couch$",
+                true,
+                fun(Filename, AccIn) ->
+                    NormFilename = couch_util:normpath(Filename),
+                    case NormFilename -- NormRoot of
+                    [$/ | RelativeName] ->
+                        ok;
+                    RelativeName ->
+                        ok
+                    end,
+                    [?l2b(filename:rootname(RelativeName, ".couch")) | AccIn]
+                end,
+                []
+            )
+        end,
+        [],
+        Roots
+    ),
+    {ok, FilenameList}.
 
 maybe_close_lru_db(#server{dbs_open=NumOpen, max_dbs_open=MaxOpen}=Server)
         when NumOpen < MaxOpen ->
@@ -284,8 +317,9 @@ handle_call({create, DbName, Options}, From, Server) ->
         [] ->
             case maybe_close_lru_db(Server) of
             {ok, Server2} ->
-                Filepath = get_full_filename(Server, DbNameList),
-                {noreply, open_async(Server2, From, DbName, Filepath,
+                Filepath = get_full_filename(Server2, DbNameList),
+                Server3 = update_db_path_idx(Server2),
+                {noreply, open_async(Server3, From, DbName, Filepath,
                         [create | Options])};
             CloseError ->
                 {reply, CloseError, Server}
@@ -333,7 +367,9 @@ handle_call({delete, DbName, _Options}, _From, Server) ->
         end;
     Error ->
         {reply, Error, Server}
-    end.
+    end;
+handle_call(db_path, _From, Server) ->
+    {reply, {ok, db_path(Server)}, update_db_path_idx(Server)}.
 
 handle_cast(Msg, _Server) ->
     exit({unknown_cast_message, Msg}).

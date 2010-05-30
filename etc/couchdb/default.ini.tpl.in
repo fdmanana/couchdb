@@ -3,7 +3,7 @@
 ; Upgrading CouchDB will overwrite this file.
 
 [couchdb]
-database_dir = %localstatelibdir%
+database_dirs = %localstatelibdir%
 view_index_dir = %localstatelibdir%
 util_driver_dir = %couchprivlibdir%
 max_document_size = 4294967296 ; 4 GB
