@@ -214,26 +214,11 @@ compact_test_dbs() ->
     ok.
 
 empty_db_dirs() ->
-    case file:list_dir(db_dir_1()) of
-    {ok, Files1} ->
-        lists:foreach(
-            fun(F) ->
-                ok = file:delete(filename:join([db_dir_1(), F]))
-            end,
-            Files1
-        );
-    _ ->
-        ok
-    end,
-    case file:list_dir(db_dir_2()) of
-    {ok, Files2} ->
-        lists:foreach(
-            fun(F) ->
-                ok = file:delete(filename:join([db_dir_2(), F]))
-            end,
-            Files2
-        );
-    _ ->
-        ok
-    end,
+    filelib:fold_files(
+        test_util:build_file("tmp/lib/"),
+        "\.couch$",
+        true,
+        fun(F, _) -> ok = file:delete(F) end,
+        []
+    ),
     ok.
