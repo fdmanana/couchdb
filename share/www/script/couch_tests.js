@@ -47,6 +47,7 @@ loadTest("cookie_auth.js");
 loadTest("copy_doc.js");
 loadTest("delayed_commits.js");
 loadTest("design_docs.js");
+loadTest("design_docs_validation.js");
 loadTest("design_options.js");
 loadTest("design_paths.js");
 loadTest("erlang_views.js");
