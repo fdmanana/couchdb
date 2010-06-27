@@ -32,7 +32,7 @@ couchTests.user_prefixes = function(debug) {
   };
 
   function userPrefix(username) {
-    // same computation as couch_httpd:username_to_prefix/1
+    // same computation as couch_httpd_auth:username_to_prefix/1
     var p0 = user_hashes[username].substr(0, 3);
     var p1 = user_hashes[username].substr(3, 3);
     return "u/" + p0 + "/" + p1 + "/" + username + "/";
