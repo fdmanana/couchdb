@@ -173,16 +173,21 @@ create_db_req(#httpd{user_ctx=UserCtx}=Req, DbName) ->
 
 set_default_db_security(_Db, #user_ctx{name = null}) ->
     ok;
-set_default_db_security(Db, #user_ctx{name = UserName}) ->
-    SecObj = {[
-        {<<"admins">>, {[
-            {<<"names">>, [UserName]}
-        ]}},
-        {<<"readers">>, {[
-            {<<"names">>, [UserName]}
-        ]}}
-    ]},
-    ok = couch_db:set_security(Db, SecObj).
+set_default_db_security(Db, #user_ctx{name = UserName, roles = Roles}) ->
+    case lists:member(<<"_admin">>, Roles) of
+    true ->
+        ok;
+    false ->
+        SecObj = {[
+            {<<"admins">>, {[
+                {<<"names">>, [UserName]}
+            ]}},
+            {<<"readers">>, {[
+                {<<"names">>, [UserName]}
+            ]}}
+        ]},
+        ok = couch_db:set_security(Db, SecObj)
+    end.
 
 delete_db_req(#httpd{user_ctx=UserCtx}=Req, DbName) ->
     ok = couch_httpd_auth:verify_permission(DbName, UserCtx),
