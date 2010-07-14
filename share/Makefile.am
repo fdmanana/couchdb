@@ -124,6 +124,7 @@ nobase_dist_localdata_DATA = \
     www/script/test/copy_doc.js \
     www/script/test/delayed_commits.js \
     www/script/test/design_docs.js \
+    www/script/test/design_docs_validation.js \
     www/script/test/design_options.js \
     www/script/test/design_paths.js \
     www/script/test/erlang_views.js \
