@@ -318,7 +318,7 @@ get_security(#db{security=SecProps}) ->
     {SecProps}.
 
 set_security(#db{update_pid=Pid}=Db, {NewSecProps}) when is_list(NewSecProps) ->
-    check_is_admin(Db),
+    ok = couch_httpd_auth:verify_permission(Db#db.name, Db#db.user_ctx),
     ok = validate_security_object(NewSecProps),
     ok = gen_server:call(Pid, {set_security, NewSecProps}, infinity),
     {ok, _} = ensure_full_commit(Db),
