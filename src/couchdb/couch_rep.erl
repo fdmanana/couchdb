@@ -23,6 +23,8 @@
 -include("couch_db.hrl").
 -include("couch_js_functions.hrl").
 
+-define(REP_ID_VERSION, 2).
+
 -record(state, {
     changes_feed,
     missing_revs,
@@ -158,8 +160,9 @@ do_init([RepId, {PostProps} = RepDoc, UserCtx] = InitArgs) ->
 
     _ ->
         % Replication using the _changes API (DB sequence update numbers).
-        SourceLog = open_replication_log(Source, RepId),
-        TargetLog = open_replication_log(Target, RepId),
+
+        [SourceLog, TargetLog] = find_replication_logs(
+            [Source, Target], RepId, {PostProps}, UserCtx),
     
         {StartSeq, History} = compare_replication_logs(SourceLog, TargetLog),
 
@@ -382,7 +385,7 @@ strip_password(Url) ->
 
 dbinfo(#http_db{} = Db) ->
     {DbProps} = couch_rep_httpc:request(Db),
-    [{list_to_atom(?b2l(K)), V} || {K,V} <- DbProps];
+    [{list_to_existing_atom(?b2l(K)), V} || {K,V} <- DbProps];
 dbinfo(Db) ->
     {ok, Info} = couch_db:get_db_info(Db),
     Info.
@@ -460,7 +463,7 @@ has_session_id(SessionId, [{Props} | Rest]) ->
         has_session_id(SessionId, Rest)
     end.
 
-maybe_append_options(Options, Props) ->
+maybe_append_options(Options, {Props}) ->
     lists:foldl(fun(Option, Acc) ->
         Acc ++
         case couch_util:get_value(Option, Props, false) of
@@ -471,13 +474,29 @@ maybe_append_options(Options, Props) ->
         end
     end, [], Options).
 
-make_replication_id({Props}, UserCtx) ->
-    %% funky algorithm to preserve backwards compatibility
+make_replication_id(RepProps, UserCtx) ->
+    BaseId = make_replication_id(RepProps, UserCtx, ?REP_ID_VERSION),
+    Extension = maybe_append_options(
+                  [<<"continuous">>, <<"create_target">>], RepProps),
+    {BaseId, Extension}.
+
+% Versioned clauses for generating replication ids
+% If a change is made to how replications are identified
+% add a new clause and increase ?REP_ID_VERSION at the top
+make_replication_id({Props}, UserCtx, 2) ->
     {ok, HostName} = inet:gethostname(),
-    % Port = mochiweb_socket_server:get(couch_httpd, port),
+    Port = mochiweb_socket_server:get(couch_httpd, port),
     Src = get_rep_endpoint(UserCtx, couch_util:get_value(<<"source">>, Props)),
     Tgt = get_rep_endpoint(UserCtx, couch_util:get_value(<<"target">>, Props)),
-    Base = [HostName, Src, Tgt] ++
+    maybe_append_filters({Props}, [HostName, Port, Src, Tgt]);
+make_replication_id({Props}, UserCtx, 1) ->
+    {ok, HostName} = inet:gethostname(),
+    Src = get_rep_endpoint(UserCtx, couch_util:get_value(<<"source">>, Props)),
+    Tgt = get_rep_endpoint(UserCtx, couch_util:get_value(<<"target">>, Props)),
+    maybe_append_filters({Props}, [HostName, Src, Tgt]).
+
+maybe_append_filters({Props}, Base) ->
+    Base2 = Base ++ 
         case couch_util:get_value(<<"filter">>, Props) of
         undefined ->
             case couch_util:get_value(<<"doc_ids">>, Props) of
@@ -489,9 +508,7 @@ make_replication_id({Props}, UserCtx) ->
         Filter ->
             [Filter, couch_util:get_value(<<"query_params">>, Props, {[]})]
         end,
-    Extension = maybe_append_options(
-        [<<"continuous">>, <<"create_target">>], Props),
-    {couch_util:to_hex(couch_util:md5(term_to_binary(Base))), Extension}.
+    couch_util:to_hex(couch_util:md5(term_to_binary(Base2))).
 
 maybe_add_trailing_slash(Url) ->
     re:replace(Url, "[^/]$", "&/", [{return, list}]).
@@ -513,26 +530,52 @@ get_rep_endpoint(_UserCtx, <<"https://",_/binary>>=Url) ->
 get_rep_endpoint(UserCtx, <<DbName/binary>>) ->
     {local, DbName, UserCtx}.
 
-open_replication_log(#http_db{}=Db, RepId) ->
-    DocId = ?LOCAL_DOC_PREFIX ++ RepId,
-    Req = Db#http_db{resource=couch_util:url_encode(DocId)},
+find_replication_logs(DbList, RepId, RepProps, UserCtx) ->
+    LogId = ?l2b(?LOCAL_DOC_PREFIX ++ RepId),
+    fold_replication_logs(DbList, ?REP_ID_VERSION,
+        LogId, LogId, RepProps, UserCtx, []).
+
+% Accumulate the replication logs
+% Falls back to older log document ids and migrates them
+fold_replication_logs([], _Vsn, _LogId, _NewId, _RepProps, _UserCtx, Acc) ->
+    lists:reverse(Acc);
+fold_replication_logs([Db|Rest]=Dbs, Vsn, LogId, NewId,
+        RepProps, UserCtx, Acc) ->
+    case open_replication_log(Db, LogId) of
+    {error, not_found} when Vsn > 1 ->
+        OldRepId = make_replication_id(RepProps, UserCtx, Vsn - 1),
+        fold_replication_logs(Dbs, Vsn - 1,
+            ?l2b(?LOCAL_DOC_PREFIX ++ OldRepId), NewId, RepProps, UserCtx, Acc);
+    {error, not_found} ->
+        fold_replication_logs(Rest, ?REP_ID_VERSION, NewId, NewId,
+            RepProps, UserCtx, [#doc{id=NewId}|Acc]);
+    {ok, Doc} when LogId =:= NewId ->
+        fold_replication_logs(Rest, ?REP_ID_VERSION, NewId, NewId,
+            RepProps, UserCtx, [Doc|Acc]);
+    {ok, Doc} ->
+        MigratedLog = #doc{id=NewId,body=Doc#doc.body},
+        fold_replication_logs(Rest, ?REP_ID_VERSION, NewId, NewId,
+            RepProps, UserCtx, [MigratedLog|Acc])
+    end.
+
+open_replication_log(#http_db{}=Db, DocId) ->
+    Req = Db#http_db{resource=couch_util:url_encode(?b2l(DocId))},
     case couch_rep_httpc:request(Req) of
     {[{<<"error">>, _}, {<<"reason">>, _}]} ->
         ?LOG_DEBUG("didn't find a replication log for ~s", [Db#http_db.url]),
-        #doc{id=?l2b(DocId)};
+        {error, not_found};
     Doc ->
         ?LOG_DEBUG("found a replication log for ~s", [Db#http_db.url]),
-        couch_doc:from_json_obj(Doc)
+        {ok, couch_doc:from_json_obj(Doc)}
     end;
-open_replication_log(Db, RepId) ->
-    DocId = ?l2b(?LOCAL_DOC_PREFIX ++ RepId),
+open_replication_log(Db, DocId) ->
     case couch_db:open_doc(Db, DocId, []) of
     {ok, Doc} ->
         ?LOG_DEBUG("found a replication log for ~s", [Db#db.name]),
-        Doc;
+        {ok, Doc};
     _ ->
         ?LOG_DEBUG("didn't find a replication log for ~s", [Db#db.name]),
-        #doc{id=DocId}
+        {error, not_found}
     end.
 
 open_db(Props, UserCtx) ->
@@ -677,7 +720,7 @@ ensure_full_commit(#http_db{headers = Headers} = Target) ->
     Req = Target#http_db{
         resource = "_ensure_full_commit",
         method = post,
-        headers = [{"content-type", "application/json"} | Headers]
+        headers = couch_util:proplist_apply_field({"Content-Type", "application/json"}, Headers)
     },
     {ResultProps} = couch_rep_httpc:request(Req),
     true = couch_util:get_value(<<"ok">>, ResultProps),
@@ -703,7 +746,7 @@ ensure_full_commit(#http_db{headers = Headers} = Source, RequiredSeq) ->
         resource = "_ensure_full_commit",
         method = post,
         qs = [{seq, RequiredSeq}],
-        headers = [{"content-type", "application/json"} | Headers]
+        headers = couch_util:proplist_apply_field({"Content-Type", "application/json"}, Headers)
     },
     {ResultProps} = couch_rep_httpc:request(Req),
     case couch_util:get_value(<<"ok">>, ResultProps) of

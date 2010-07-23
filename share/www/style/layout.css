@@ -55,7 +55,7 @@ code.null { color: #666; }
 button { font-size: 100%; -webkit-appearance: square-button; }
 button[disabled] { color: #999; }
 input, select, textarea { background: #fff; border: 1px solid;
-  border-color: #999 #ddd #ddd #999; margin: 0; padding: 1px;
+  border-color: #999 #ddd #ddd #999; color: #000; margin: 0; padding: 1px;
 }
 input.placeholder { color: #999; }
 textarea {
@@ -323,6 +323,13 @@ body.loading #dialog h2 {
   line-height: 16px; padding: 5px;
 }
 #switch select { font-size: 90%; }
+
+/* Stale views checkbox */
+
+#staleviews {
+  color: #666; float: right; font-size: 90%;
+  font-weight: bold; line-height: 16px; padding: 5px;
+}
 
 /* View function editing */
 
