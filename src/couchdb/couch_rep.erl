@@ -53,7 +53,8 @@
 
     stats = nil,
     doc_ids = nil,
-    rep_doc = nil
+    rep_doc = nil,
+    stop_after_writer = false
 }).
 
 %% convenience function to do a simple replication from the shell
@@ -90,11 +91,14 @@ end_replication({BaseId, Extension}) ->
         {ok, {cancelled, ?l2b(BaseId)}}
     end.
 
-start_replication(RepDoc, {BaseId, Extension}, UserCtx) ->
+start_replication(RepDoc, RepId, UserCtx) ->
+    start_replication(RepDoc, RepId, UserCtx, true).
+
+start_replication(RepDoc, {BaseId, Extension}, UserCtx, StopAfterWriter) ->
     Replicator = {
         BaseId ++ Extension,
         {gen_server, start_link,
-            [?MODULE, [BaseId, RepDoc, UserCtx], []]},
+            [?MODULE, [BaseId, RepDoc, UserCtx, StopAfterWriter], []]},
         temporary,
         1,
         worker,
@@ -122,7 +126,7 @@ init(InitArgs) ->
     try do_init(InitArgs)
     catch throw:{db_not_found, DbUrl} -> {stop, {db_not_found, DbUrl}} end.
 
-do_init([RepId, {PostProps} = RepDoc, UserCtx] = InitArgs) ->
+do_init([RepId, {PostProps} = RepDoc, UserCtx, StopAfterWriter] = InitArgs) ->
     process_flag(trap_exit, true),
 
     SourceProps = couch_util:get_value(<<"source">>, PostProps),
@@ -138,7 +142,7 @@ do_init([RepId, {PostProps} = RepDoc, UserCtx] = InitArgs) ->
     SourceInfo = dbinfo(Source),
     TargetInfo = dbinfo(Target),
 
-    ok = maybe_set_triggered(RepDoc, RepId),
+    maybe_set_triggered(RepDoc, RepId),
 
     case DocIds of
     List when is_list(List) ->
@@ -210,7 +214,8 @@ do_init([RepId, {PostProps} = RepDoc, UserCtx] = InitArgs) ->
         src_starttime = couch_util:get_value(instance_start_time, SourceInfo),
         tgt_starttime = couch_util:get_value(instance_start_time, TargetInfo),
         doc_ids = DocIds,
-        rep_doc = RepDoc
+        rep_doc = RepDoc,
+        stop_after_writer = StopAfterWriter
     },
     {ok, State}.
 
@@ -248,6 +253,9 @@ handle_info({'DOWN', _, _, _, _}, State) ->
     timer:cancel(State#state.checkpoint_scheduled),
     {stop, shutdown, State};
 
+handle_info({'EXIT', Writer, normal}, #state{writer=Writer,
+        stop_after_writer=true} = State) ->
+    {stop, normal, State};
 handle_info({'EXIT', Writer, normal}, #state{writer=Writer} = State) ->
     case State#state.listeners of
     [] ->
@@ -268,12 +276,12 @@ handle_info({'EXIT', _Pid, Reason}, State) ->
 
 terminate(normal, #state{checkpoint_scheduled=nil} = State) ->
     do_terminate(State),
-    ok = update_rep_doc(State#state.rep_doc, [{<<"state">>, <<"completed">>}]);
+    update_rep_doc(State#state.rep_doc, [{<<"state">>, <<"completed">>}]);
     
 terminate(normal, State) ->
     timer:cancel(State#state.checkpoint_scheduled),
     do_terminate(do_checkpoint(State)),
-    ok = update_rep_doc(State#state.rep_doc, [{<<"state">>, <<"completed">>}]);
+    update_rep_doc(State#state.rep_doc, [{<<"state">>, <<"completed">>}]);
 
 terminate(shutdown, #state{listeners = Listeners} = State) ->
     % continuous replication stopped
@@ -283,7 +291,7 @@ terminate(shutdown, #state{listeners = Listeners} = State) ->
 terminate(Reason, #state{listeners = Listeners} = State) ->
     [gen_server:reply(L, {error, Reason}) || L <- Listeners],
     do_forced_terminate(State),
-    ok = update_rep_doc(State#state.rep_doc, [{<<"state">>, <<"error">>}]).
+    update_rep_doc(State#state.rep_doc, [{<<"state">>, <<"error">>}]).
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
@@ -431,9 +439,13 @@ do_terminate(State) ->
     true ->
         []; % continuous replications have no listeners
     _ ->
-        [Original|Rest] = lists:reverse(Listeners),
-        gen_server:reply(Original, {ok, NewRepHistory}),
-        Rest
+        case lists:reverse(Listeners) of
+        [Original|Rest] ->
+            gen_server:reply(Original, {ok, NewRepHistory}),
+            Rest;
+        [] ->
+            []
+        end
     end,
 
     %% maybe trigger another replication. If this replicator uses a local
@@ -804,8 +816,7 @@ update_rep_doc({Props} = _RepDoc, KVs) ->
         _ ->
             ok
         end,
-        couch_db:close(RepDb),
-        ok
+        couch_db:close(RepDb)
     end.
 
 update_rep_doc(RepDb, #doc{body = {RepDocBody}} = RepDoc, KVs) ->
@@ -816,7 +827,9 @@ update_rep_doc(RepDb, #doc{body = {RepDocBody}} = RepDoc, KVs) ->
         RepDocBody,
         KVs
     ),
-    {ok, _NewRev} = couch_db:update_doc(
+    % might not succeed - when the replication doc is deleted right
+    % before this update (not an error)
+    couch_db:update_doc(
         RepDb,
         RepDoc#doc{body = {NewRepDocBody}},
         []
@@ -828,7 +841,7 @@ maybe_set_triggered({RepProps} = RepDoc, RepId) ->
     <<"triggered">> ->
         ok;
     _ ->
-        ok = update_rep_doc(
+        update_rep_doc(
             RepDoc,
             [
                 {<<"state">>, <<"triggered">>},

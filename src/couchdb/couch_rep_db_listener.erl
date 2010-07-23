@@ -194,22 +194,13 @@ maybe_start_replication({RepProps} = JsonRepDoc) ->
     [] ->
         true = ets:insert(?REP_ID_TO_DOC_ID_MAP, {RepId, DocId}),
         true = ets:insert(?DOC_TO_REP_ID_MAP, {DocId, RepId}),
-        launch_replication(JsonRepDoc, RepId, UserCtx);
+        start_replication(JsonRepDoc, RepId, UserCtx);
     [{RepId, DocId}] ->
         ok;
     [{RepId, _OtherDocId}] ->
-        ok = couch_rep:update_rep_doc(
+        couch_rep:update_rep_doc(
             JsonRepDoc, [{<<"replication_id">>, ?l2b(element(1, RepId))}]
         )
-    end.
-
-
-launch_replication({Props} = RepDoc, RepId, UserCtx) ->
-    case couch_util:get_value(<<"continuous">>, Props, false) of
-    true ->
-        start_replication(RepDoc, RepId, UserCtx);
-    false ->
-        spawn_link(fun() -> do_replication(RepDoc, RepId, UserCtx) end)
     end.
 
 
@@ -218,7 +209,7 @@ start_replication(RepDoc, RepId, UserCtx) ->
     RepPid when is_pid(RepPid) ->
         {ok, RepPid};
     Error ->
-        ok = couch_rep:update_rep_doc(
+        couch_rep:update_rep_doc(
             RepDoc,
             [
                 {<<"state">>, <<"error">>},
@@ -227,29 +218,6 @@ start_replication(RepDoc, RepId, UserCtx) ->
         ),
         ?LOG_ERROR("Error starting replication ~p: ~p", [RepId, Error]),
         {error, Error}
-    end.
-
-
-do_replication(RepDoc, RepId, UserCtx) ->
-    case start_replication(RepDoc, RepId, UserCtx) of
-    {error, _Error} ->
-        ok;
-    {ok, RepPid} ->
-        try
-            case gen_server:call(RepPid, get_result, infinity) of
-            retry ->
-                do_replication(RepDoc, RepId, UserCtx);
-            _ ->
-                ok
-            end
-        catch
-        exit:{noproc, {gen_server, call, [RepPid, get_result , infinity]}} ->
-            %% oops, this replication just finished -- restart it.
-            do_replication(RepDoc, RepId, UserCtx);
-        exit:{normal, {gen_server, call, [RepPid, get_result , infinity]}} ->
-            %% we made the call during terminate
-            do_replication(RepDoc, RepId, UserCtx)
-        end
     end.
 
 
