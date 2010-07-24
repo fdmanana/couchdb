@@ -158,8 +158,8 @@ process_change({Change}) ->
         <<"completed">> ->
             maybe_stop_replication(JsonRepDoc);
         <<"error">> ->
-            % TODO maybe wait and restart replication?
-            ok;
+            % cleanup ets table entries
+            maybe_stop_replication(JsonRepDoc);
         <<"triggered">> ->
             maybe_start_replication(JsonRepDoc);
         undefined ->
