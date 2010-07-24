@@ -150,7 +150,7 @@ has_valid_rep_id(_Else) ->
 
 process_change({Change}) ->
     {RepProps} = JsonRepDoc = couch_util:get_value(doc, Change),
-    case couch_util:get_value(deleted, Change, false) of
+    case couch_util:get_value(<<"deleted">>, Change, false) of
     true ->
         maybe_stop_replication(JsonRepDoc);
     false ->
