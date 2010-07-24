@@ -804,8 +804,7 @@ update_rep_doc({Props} = _RepDoc, KVs) ->
         _ ->
             ok
         end,
-        couch_db:close(RepDb),
-        ok
+        couch_db:close(RepDb)
     end.
 
 update_rep_doc(RepDb, #doc{body = {RepDocBody}} = RepDoc, KVs) ->
