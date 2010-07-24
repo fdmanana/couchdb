@@ -194,7 +194,7 @@ maybe_start_replication({RepProps} = JsonRepDoc) ->
     [] ->
         true = ets:insert(?REP_ID_TO_DOC_ID_MAP, {RepId, DocId}),
         true = ets:insert(?DOC_TO_REP_ID_MAP, {DocId, RepId}),
-        start_replication(JsonRepDoc, RepId, UserCtx);
+        spawn_link(fun() -> start_replication(JsonRepDoc, RepId, UserCtx) end);
     [{RepId, DocId}] ->
         ok;
     [{RepId, _OtherDocId}] ->
@@ -207,7 +207,7 @@ maybe_start_replication({RepProps} = JsonRepDoc) ->
 start_replication(RepDoc, RepId, UserCtx) ->
     case (catch couch_rep:start_replication(RepDoc, RepId, UserCtx)) of
     RepPid when is_pid(RepPid) ->
-        {ok, RepPid};
+        couch_rep:get_result(RepPid, RepId, RepDoc, UserCtx);
     Error ->
         couch_rep:update_rep_doc(
             RepDoc,
@@ -216,8 +216,7 @@ start_replication(RepDoc, RepId, UserCtx) ->
                 {<<"replication_id">>, ?l2b(element(1, RepId))}
             ]
         ),
-        ?LOG_ERROR("Error starting replication ~p: ~p", [RepId, Error]),
-        {error, Error}
+        ?LOG_ERROR("Error starting replication ~p: ~p", [RepId, Error])
     end.
 
 

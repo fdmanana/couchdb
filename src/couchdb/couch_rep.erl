@@ -17,7 +17,7 @@
 
 -export([replicate/2, checkpoint/1]).
 -export([ensure_rep_db_exists/0, make_replication_id/2]).
--export([start_replication/3, end_replication/1]).
+-export([start_replication/3, end_replication/1, get_result/4]).
 -export([update_rep_doc/2]).
 
 -include("couch_db.hrl").
@@ -53,8 +53,7 @@
 
     stats = nil,
     doc_ids = nil,
-    rep_doc = nil,
-    stop_after_writer = false
+    rep_doc = nil
 }).
 
 %% convenience function to do a simple replication from the shell
@@ -67,18 +66,13 @@ replicate(Source, Target) when is_binary(Source), is_binary(Target) ->
 
 %% function handling POST to _replicate
 replicate({Props}=PostBody, UserCtx) ->
-    RepId = {BaseId, _Extension} = make_replication_id(PostBody, UserCtx),
+    RepId = make_replication_id(PostBody, UserCtx),
     case couch_util:get_value(<<"cancel">>, Props, false) of
     true ->
         end_replication(RepId);
     false ->
         Server = start_replication(PostBody, RepId, UserCtx),
-        case couch_util:get_value(<<"continuous">>, Props, false) of
-        true ->
-            {ok, {continuous, ?l2b(BaseId)}};
-        false ->
-            get_result(Server, PostBody, UserCtx)
-        end
+        get_result(Server, RepId, PostBody, UserCtx)
     end.
 
 end_replication({BaseId, Extension}) ->
@@ -91,14 +85,11 @@ end_replication({BaseId, Extension}) ->
         {ok, {cancelled, ?l2b(BaseId)}}
     end.
 
-start_replication(RepDoc, RepId, UserCtx) ->
-    start_replication(RepDoc, RepId, UserCtx, true).
-
-start_replication(RepDoc, {BaseId, Extension}, UserCtx, StopAfterWriter) ->
+start_replication(RepDoc, {BaseId, Extension}, UserCtx) ->
     Replicator = {
         BaseId ++ Extension,
         {gen_server, start_link,
-            [?MODULE, [BaseId, RepDoc, UserCtx, StopAfterWriter], []]},
+            [?MODULE, [BaseId, RepDoc, UserCtx], []]},
         temporary,
         1,
         worker,
@@ -109,24 +100,29 @@ start_replication(RepDoc, {BaseId, Extension}, UserCtx, StopAfterWriter) ->
 checkpoint(Server) ->
     gen_server:cast(Server, do_checkpoint).
 
-get_result(Server, PostBody, UserCtx) ->
-    try gen_server:call(Server, get_result, infinity) of
-    retry -> replicate(PostBody, UserCtx);
-    Else -> Else
-    catch
-    exit:{noproc, {gen_server, call, [Server, get_result , infinity]}} ->
-        %% oops, this replication just finished -- restart it.
-        replicate(PostBody, UserCtx);
-    exit:{normal, {gen_server, call, [Server, get_result , infinity]}} ->
-        %% we made the call during terminate
-        replicate(PostBody, UserCtx)
+get_result(Server, {BaseId, _Extension}, {Props} = PostBody, UserCtx) ->
+    case couch_util:get_value(<<"continuous">>, Props, false) of
+    true ->
+        {ok, {continuous, ?l2b(BaseId)}};
+    false ->
+        try gen_server:call(Server, get_result, infinity) of
+        retry -> replicate(PostBody, UserCtx);
+        Else -> Else
+        catch
+        exit:{noproc, {gen_server, call, [Server, get_result, infinity]}} ->
+            %% oops, this replication just finished -- restart it.
+            replicate(PostBody, UserCtx);
+        exit:{normal, {gen_server, call, [Server, get_result, infinity]}} ->
+            %% we made the call during terminate
+            replicate(PostBody, UserCtx)
+        end
     end.
 
 init(InitArgs) ->
     try do_init(InitArgs)
     catch throw:{db_not_found, DbUrl} -> {stop, {db_not_found, DbUrl}} end.
 
-do_init([RepId, {PostProps} = RepDoc, UserCtx, StopAfterWriter] = InitArgs) ->
+do_init([RepId, {PostProps} = RepDoc, UserCtx] = InitArgs) ->
     process_flag(trap_exit, true),
 
     SourceProps = couch_util:get_value(<<"source">>, PostProps),
@@ -214,8 +210,7 @@ do_init([RepId, {PostProps} = RepDoc, UserCtx, StopAfterWriter] = InitArgs) ->
         src_starttime = couch_util:get_value(instance_start_time, SourceInfo),
         tgt_starttime = couch_util:get_value(instance_start_time, TargetInfo),
         doc_ids = DocIds,
-        rep_doc = RepDoc,
-        stop_after_writer = StopAfterWriter
+        rep_doc = RepDoc
     },
     {ok, State}.
 
@@ -253,9 +248,6 @@ handle_info({'DOWN', _, _, _, _}, State) ->
     timer:cancel(State#state.checkpoint_scheduled),
     {stop, shutdown, State};
 
-handle_info({'EXIT', Writer, normal}, #state{writer=Writer,
-        stop_after_writer=true} = State) ->
-    {stop, normal, State};
 handle_info({'EXIT', Writer, normal}, #state{writer=Writer} = State) ->
     case State#state.listeners of
     [] ->
@@ -439,13 +431,9 @@ do_terminate(State) ->
     true ->
         []; % continuous replications have no listeners
     _ ->
-        case lists:reverse(Listeners) of
-        [Original|Rest] ->
-            gen_server:reply(Original, {ok, NewRepHistory}),
-            Rest;
-        [] ->
-            []
-        end
+        [Original|Rest] = lists:reverse(Listeners),
+        gen_server:reply(Original, {ok, NewRepHistory}),
+        Rest
     end,
 
     %% maybe trigger another replication. If this replicator uses a local
@@ -812,11 +800,12 @@ update_rep_doc({Props} = _RepDoc, KVs) ->
         {ok, RepDb} = ensure_rep_db_exists(),
         case couch_db:open_doc(RepDb, RepDocId, []) of
         {ok, LatestRepDoc} ->
-            ok = update_rep_doc(RepDb, LatestRepDoc, KVs);
+            update_rep_doc(RepDb, LatestRepDoc, KVs);
         _ ->
             ok
         end,
-        couch_db:close(RepDb)
+        couch_db:close(RepDb),
+        ok
     end.
 
 update_rep_doc(RepDb, #doc{body = {RepDocBody}} = RepDoc, KVs) ->
@@ -833,8 +822,7 @@ update_rep_doc(RepDb, #doc{body = {RepDocBody}} = RepDoc, KVs) ->
         RepDb,
         RepDoc#doc{body = {NewRepDocBody}},
         []
-    ),
-    ok.
+    ).
 
 maybe_set_triggered({RepProps} = RepDoc, RepId) ->
     case couch_util:get_value(<<"state">>, RepProps) of
