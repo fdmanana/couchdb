@@ -15,7 +15,7 @@
 
 -export([handle_view_req/3,handle_temp_view_req/2]).
 
--export([get_stale_type/1, get_reduce_type/1, parse_view_params/3]).
+-export([parse_view_params/3]).
 -export([make_view_fold_fun/7, finish_view_fold/4, view_row_obj/3]).
 -export([view_group_etag/2, view_group_etag/3, make_reduce_fold_funs/6]).
 -export([design_doc_view/5, parse_bool_param/1, doc_member/2]).
@@ -282,8 +282,11 @@ parse_view_param("count", _Value) ->
     throw({query_parse_error, <<"Query parameter 'count' is now 'limit'.">>});
 parse_view_param("stale", "ok") ->
     [{stale, ok}];
+parse_view_param("stale", "update_after") ->
+    [{stale, update_after}];
 parse_view_param("stale", _Value) ->
-    throw({query_parse_error, <<"stale only available as stale=ok">>});
+    throw({query_parse_error,
+            <<"stale only available as stale=ok or as stale=update_after">>});
 parse_view_param("update", _Value) ->
     throw({query_parse_error, <<"update=false is now stale=ok">>});
 parse_view_param("descending", Value) ->
