@@ -209,7 +209,7 @@ make_lost_and_found(DbName) ->
     end, lists:map(fun(WorkSet) ->
         Parent = self(),
         spawn_link(fun() ->
-            ?LOG_ERROR("Worker ~p merging", [self()]),
+            ?LOG_INFO("Worker ~p starting merge", [self()]),
             lists:foreach(fun(Root) ->
                 {ok, Bt} = couch_btree:open({Root, 0}, Fd, BtOptions),
                 merge_to_file(Db#db{fulldocinfo_by_id_btree = Bt}, TargetName)
