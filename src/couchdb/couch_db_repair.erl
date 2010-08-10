@@ -167,7 +167,7 @@ merge_to_file(Db, TargetName) ->
             couch_db:update_docs(TargetDb, [Doc || {ok, Doc} <- Acc],
                 [full_commit], replicated_changes),
             ?LOG_INFO("writing ~p updates to ~s", [I, TargetName]),
-            {ok, {length(Docs), Docs}};
+            {ok, {0, []}};
         true ->
             {ok, {I+length(Docs), Docs ++ Acc}}
         end
