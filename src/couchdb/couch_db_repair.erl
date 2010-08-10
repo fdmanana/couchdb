@@ -18,6 +18,7 @@
 
 -include("couch_db.hrl").
 
+-define(WORKERS, 3).
 -define(CHUNK_SIZE, 1048576).
 -define(SIZE_BLOCK, 4096).
 
@@ -189,12 +190,33 @@ make_lost_and_found(DbName) ->
         {join, fun couch_db_updater:btree_by_id_join/2},
         {reduce, fun couch_db_updater:btree_by_id_reduce/3}
     ],
+    ?LOG_INFO("Finding all btree nodes", []),
     Nodes = find_nodes_quickly(Fd),
-    FoundNodes = prune_nodes(Fd, Nodes, sets:from_list([RootPos])),
-    sets:fold(fun(Root, _) ->
-        {ok, Bt} = couch_btree:open({Root, 0}, Fd, BtOptions),
-        merge_to_file(Db#db{fulldocinfo_by_id_btree = Bt}, TargetName)
-    end, nil, sets:subtract(sets:from_list(Nodes), FoundNodes)).
+    ?LOG_INFO("Pruning non-root nodes", []),
+    FoundSet = prune_nodes(Fd, Nodes, sets:from_list([RootPos])),
+    LostSet = sets:subtract(sets:from_list(Nodes), FoundSet),
+
+    ?LOG_INFO("Splitting up work among ~p workers", [?WORKERS]),
+    WorkSetSize = round(sets:size(LostSet)/?WORKERS+0.5),
+    {WorkSets, []} = lists:mapfoldl(fun(_, MoreWork) ->
+        lists:split(lists:min([WorkSetSize, length(MoreWork)]), MoreWork)
+    end, sets:to_list(LostSet), lists:seq(1, ?WORKERS)),
+
+    lists:foreach(fun(WorkerPid) ->
+        receive {WorkerPid, done} ->
+            ok
+        end
+    end, lists:map(fun(WorkSet) ->
+        Parent = self(),
+        spawn_link(fun() ->
+            ?LOG_ERROR("Worker ~p merging", [self()]),
+            lists:foreach(fun(Root) ->
+                {ok, Bt} = couch_btree:open({Root, 0}, Fd, BtOptions),
+                merge_to_file(Db#db{fulldocinfo_by_id_btree = Bt}, TargetName)
+            end, WorkSet),
+            Parent ! {self(), done}
+        end)
+    end, WorkSets)).
 
 %% @doc returns a list of offsets in the file corresponding to locations of
 %%      all kp and kv_nodes from the by_id tree
