@@ -150,11 +150,11 @@ key_type(K) when is_binary(K) ->
     binary.
 
 merge_to_file(Db, TargetName) ->
-    case couch_db:open(TargetName, []) of
-    {ok, TargetDb0} ->
-        ok;
-    {not_found, no_db_file} ->
-        {ok, TargetDb0} = couch_db:create(TargetName, [])
+    {ok, TargetDb0} = case couch_db:create(TargetName, []) of
+    file_exists ->
+        couch_db:open(TargetName, []);
+    {ok, _}=OpenResult ->
+        OpenResult
     end,
     TargetDb = TargetDb0#db{fsync_options = [before_header]},
 
