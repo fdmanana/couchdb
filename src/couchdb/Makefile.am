@@ -87,6 +87,7 @@ source_files = \
     couch_httpd_rep.erl \
     couch_api_wrap.erl \
     couch_api_wrap_httpc.erl \
+    couch_msg_grouper.erl \
     json_stream_parse.erl
 
 
@@ -154,6 +155,7 @@ compiled_files = \
     couch_httpd_rep.beam \
     couch_api_wrap.beam \
     couch_api_wrap_httpc.beam \
+    couch_msg_grouper.beam \
     json_stream_parse.beam
 
 # doc_base = \

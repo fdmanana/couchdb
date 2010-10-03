@@ -57,7 +57,8 @@
     missing_rev_finders,
     doc_copiers,
     seqs_in_progress = gb_trees:empty(),
-    stats = #rep_stats{}
+    stats = #rep_stats{},
+    msg_proxies = []
     }).
 
 
@@ -230,41 +231,47 @@ do_init(#rep{options = Options} = Rep) ->
         {N div 2, (N div 2) + (N rem 2)}
     end,
 
-    case get_value(doc_ids, Options) of
+    Proxies = case get_value(doc_ids, Options) of
     undefined ->
         {ok, ChangesQueue} = couch_work_queue:new(
             [{max_size, 100000}, {max_items, 500}, {multi_workers, true}]),
 
+        ChangesProxy = couch_msg_grouper:start_link(self(), 300),
         % This starts the _changes reader process. It adds the changes from
         % the source db to the ChangesQueue.
-        ChangesReader = spawn_changes_reader(self(), StartSeq, Source,
+        ChangesReader = spawn_changes_reader(ChangesProxy, StartSeq, Source,
             ChangesQueue, Options),
 
+        RevsProxy = couch_msg_grouper:start_link(self(), 100),
         % This starts the missing rev finders. They check the target for changes
         % in the ChangesQueue to see if they exist on the target or not. If not,
         % adds them to MissingRevsQueue.
         MissingRevFinders =
-            couch_replicator_rev_finders:spawn_missing_rev_finders(self(),
-                Target, ChangesQueue, MissingRevsQueue, RevFindersCount);
+            couch_replicator_rev_finders:spawn_missing_rev_finders(RevsProxy,
+                Target, ChangesQueue, MissingRevsQueue, RevFindersCount),
+        [ChangesProxy, RevsProxy];
     DocIds ->
         ChangesQueue = nil,
         ChangesReader = nil,
         MissingRevFinders =
             couch_replicator_rev_finders:spawn_missing_rev_finders(self(),
-                Target, DocIds, MissingRevsQueue, RevFindersCount)
+                Target, DocIds, MissingRevsQueue, RevFindersCount),
+        []
     end,
 
+    CopiersProxy = couch_msg_grouper:start_link(self(), 50),
     % This starts the doc copy processes. They fetch documents from the
     % MissingRevsQueue and copy them from the source to the target database.
     DocCopiers = couch_replicator_doc_copiers:spawn_doc_copiers(
-        self(), Source, Target, MissingRevsQueue, CopiersCount),
+        CopiersProxy, Source, Target, MissingRevsQueue, CopiersCount),
 
     {ok, State#rep_state{
             missing_revs_queue = MissingRevsQueue,
             changes_queue = ChangesQueue,
             changes_reader = ChangesReader,
             missing_rev_finders = MissingRevFinders,
-            doc_copiers = DocCopiers
+            doc_copiers = DocCopiers,
+            msg_proxies = [CopiersProxy | Proxies]
         }
     }.
 
@@ -294,13 +301,19 @@ handle_info({'EXIT', Pid, normal}, State) ->
     #rep_state{
         doc_copiers = DocCopiers,
         missing_rev_finders = RevFinders,
-        missing_revs_queue = RevsQueue
+        missing_revs_queue = RevsQueue,
+        msg_proxies = Proxies
     } = State,
     case get_value(Pid, RevFinders) of
     undefined ->
         case get_value(Pid, DocCopiers) of
         undefined ->
-            {stop, {unknown_process_died, Pid, normal}, State};
+            case lists:member(Pid, Proxies) of
+            true ->
+                {noreply, State#rep_state{msg_proxies = Proxies -- [Pid]}};
+            false ->
+                {stop, {unknown_process_died, Pid, normal}, State}
+            end;
         _CopierId ->
             case lists:keydelete(Pid, 1, DocCopiers) of
             [] ->
@@ -322,14 +335,21 @@ handle_info({'EXIT', Pid, normal}, State) ->
 handle_info({'EXIT', Pid, Reason}, State) ->
     #rep_state{
         doc_copiers = DocCopiers,
-        missing_rev_finders = RevFinders
+        missing_rev_finders = RevFinders,
+        msg_proxies = Proxies
     } = State,
     State2 = cancel_timer(State),
     case get_value(Pid, DocCopiers) of
     undefined ->
         case get_value(Pid, RevFinders) of
         undefined ->
-            {stop, {unknown_process_died, Pid, Reason}, State2};
+            case lists:member(Pid, Proxies) of
+            true ->
+                ?LOG_ERROR("MsgProxy process died with reason: ~p", [Reason]),
+                {stop, {msg_proxy_died, Pid, Reason}, State2};
+            false ->
+                {stop, {unknown_process_died, Pid, Reason}, State2}
+            end;
         FinderId ->
             ?LOG_ERROR("RevsFinder process ~p died with reason: ~p",
                 [FinderId, Reason]),
@@ -351,23 +371,34 @@ handle_cast(checkpoint, State) ->
     State2 = do_checkpoint(State),
     {noreply, State2#rep_state{timer = start_timer(State)}};
 
-handle_cast({seq_start, {Seq, NumChanges}}, State) ->
+handle_cast({seq_start, SeqRevs}, State) ->
     #rep_state{
         seqs_in_progress = SeqsInProgress,
         stats = #rep_stats{missing_checked = Mc} = Stats
     } = State,
+    {SeqsInProgress2, Mc2} = lists:foldl(
+        fun({Seq, NumRevs}, {InProgress, Missing}) ->
+            {gb_trees:insert(Seq, NumRevs, InProgress), Missing + NumRevs}
+        end,
+        {SeqsInProgress, Mc}, SeqRevs
+    ),
     NewState = State#rep_state{
-        seqs_in_progress = gb_trees:insert(Seq, NumChanges, SeqsInProgress),
-        stats = Stats#rep_stats{missing_checked = Mc + NumChanges}
+        seqs_in_progress = SeqsInProgress2,
+        stats = Stats#rep_stats{missing_checked = Mc2}
     },
     {noreply, NewState};
 
 handle_cast({seq_changes_done, Changes}, State) ->
-    {noreply, process_seq_changes_done(Changes, State)};
+    {noreply, process_seq_changes_done(lists:flatten(Changes), State)};
 
-handle_cast({add_stat, {StatPos, Val}}, #rep_state{stats = Stats} = State) ->
-    Stat = element(StatPos, Stats),
-    NewStats = setelement(StatPos, Stats, Stat + Val),
+handle_cast({add_stat, StatUpdates}, #rep_state{stats = Stats1} = State) ->
+    NewStats = lists:foldl(
+        fun({StatPos, Val}, Stats) ->
+            Stat = element(StatPos, Stats),
+            setelement(StatPos, Stats, Stat + Val)
+        end,
+        Stats1, StatUpdates
+    ),
     {noreply, State#rep_state{stats = NewStats}};
 
 handle_cast(Msg, State) ->
@@ -503,7 +534,7 @@ spawn_changes_reader(Cp, StartSeq, Source, ChangesQueue, Options) ->
         fun()->
             couch_api_wrap:changes_since(Source, all_docs, StartSeq,
                 fun(#doc_info{high_seq=Seq, revs=Revs} = DocInfo) ->
-                    ok = gen_server:cast(Cp, {seq_start, {Seq, length(Revs)}}),
+                    Cp ! {cast, {seq_start, {Seq, length(Revs)}}},
                     ok = couch_work_queue:queue(ChangesQueue, DocInfo)
                 end, Options),
             couch_work_queue:close(ChangesQueue)

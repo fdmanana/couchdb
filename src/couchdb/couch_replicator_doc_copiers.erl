@@ -154,11 +154,11 @@ seqs_done([], _) ->
 seqs_done([{nil, _} | _], _) ->
     ok;
 seqs_done(SeqCounts, Cp) ->
-    ok = gen_server:cast(Cp, {seq_changes_done, SeqCounts}).
+    Cp ! {cast, {seq_changes_done, SeqCounts}}.
 
 
 maybe_send_stat(0, _StatPos, _Cp) ->
     ok;
 maybe_send_stat(Value, StatPos, Cp) ->
-    ok = gen_server:cast(Cp, {add_stat, {StatPos, Value}}).
+    Cp ! {cast, {add_stat, {StatPos, Value}}}.
 
