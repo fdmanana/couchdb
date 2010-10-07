@@ -16,16 +16,9 @@
 -export([fold/4, full_reduce/1, final_reduce/2, foldl/3, foldl/4]).
 -export([fold_reduce/4, lookup/2, get_state/1, set_options/2]).
 
+-include("couch_db.hrl").
 -define(CHUNK_THRESHOLD, 16#4ff).
 
--record(btree,
-    {fd,
-    root,
-    extract_kv = fun({Key, Value}) -> {Key, Value} end,
-    assemble_kv =  fun(Key, Value) -> {Key, Value} end,
-    less = fun(A, B) -> A < B end,
-    reduce = nil
-    }).
 
 extract(#btree{extract_kv=Extract}, Value) ->
     Extract(Value).
@@ -49,7 +42,9 @@ set_options(Bt, [{join, Assemble}|Rest]) ->
 set_options(Bt, [{less, Less}|Rest]) ->
     set_options(Bt#btree{less=Less}, Rest);
 set_options(Bt, [{reduce, Reduce}|Rest]) ->
-    set_options(Bt#btree{reduce=Reduce}, Rest).
+    set_options(Bt#btree{reduce=Reduce}, Rest);
+set_options(Bt, [{cache, Cache}|Rest]) ->
+    set_options(Bt#btree{cache=Cache}, Rest).
 
 open(State, Fd, Options) ->
     {ok, set_options(#btree{root=State, fd=Fd}, Options)}.
@@ -326,9 +321,18 @@ reduce_node(#btree{reduce=R}=Bt, kv_node, NodeList) ->
     R(reduce, [assemble(Bt, K, V) || {K, V} <- NodeList]).
 
 
-get_node(#btree{fd = Fd}, NodePos) ->
+get_node(#btree{fd = Fd, cache = nil}, NodePos) ->
     {ok, {NodeType, NodeList}} = couch_file:pread_term(Fd, NodePos),
-    {NodeType, NodeList}.
+    {NodeType, NodeList};
+get_node(#btree{fd = Fd, cache = Cache}, NodePos) when is_pid(Cache) ->
+    case term_cache_trees:get(Cache, NodePos) of
+    {ok, Node} ->
+        Node;
+    not_found ->
+        {ok, {_Type, _NodeList} = Node} = couch_file:pread_term(Fd, NodePos),
+        ok = term_cache_trees:put(Cache, NodePos, Node),
+        Node
+    end.
 
 write_node(Bt, NodeType, NodeList) ->
     % split up nodes into smaller sizes

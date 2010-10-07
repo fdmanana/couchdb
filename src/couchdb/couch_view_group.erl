@@ -23,6 +23,9 @@
 
 -include("couch_db.hrl").
 
+-define(BTREE_CACHE_SIZE, 50).
+-define(BTREE_CACHE_POLICY, lru).
+
 -record(group_state, {
     type,
     db_name,
@@ -32,7 +35,8 @@
     compactor_pid=nil,
     waiting_commit=false,
     waiting_list=[],
-    ref_counter=nil
+    ref_counter=nil,
+    btree_caches
 }).
 
 % api methods
@@ -95,7 +99,8 @@ init({InitArgs, ReturnPid, Ref}) ->
                     init_args=InitArgs,
                     updater_pid = Pid,
                     group=Group,
-                    ref_counter=RefCounter}}
+                    ref_counter=RefCounter,
+                    btree_caches=group_btree_caches(Group)}}
         end;
     Error ->
         ReturnPid ! {Ref, self(), Error},
@@ -323,8 +328,13 @@ handle_info({'EXIT', _, reset}, State) ->
     %% message from an old (probably pre-compaction) updater; ignore
     {noreply, State};
     
-handle_info({'EXIT', _FromPid, normal}, State) ->
-    {noreply, State};
+handle_info({'EXIT', Pid, normal}, State) ->
+    case lists:member(Pid, State#group_state.btree_caches) of
+    true ->
+        {stop, {view_btree_cache_died, normal}, State};
+    false ->
+        {noreply, State}
+    end;
 
 handle_info({'EXIT', FromPid, {{nocatch, Reason}, _Trace}}, State) ->
     ?LOG_DEBUG("Uncaught throw() in linked pid: ~p", [{FromPid, Reason}]),
@@ -343,6 +353,9 @@ terminate(Reason, #group_state{updater_pid=Update, compactor_pid=Compact}=S) ->
     reply_all(S, Reason),
     couch_util:shutdown_sync(Update),
     couch_util:shutdown_sync(Compact),
+    lists:foreach(
+        fun(Cache) -> term_cache_trees:stop(Cache) end,
+        S#group_state.btree_caches),
     ok.
 
 code_change(_OldVsn, State, _Extra) ->
@@ -556,7 +569,9 @@ init_group(Db, Fd, #group{def_lang=Lang,views=Views}=
             Group, IndexHeader) ->
      #index_header{seq=Seq, purge_seq=PurgeSeq,
             id_btree_state=IdBtreeState, view_states=ViewStates} = IndexHeader,
-    {ok, IdBtree} = couch_btree:open(IdBtreeState, Fd),
+    {ok, IdBtreeCache} = term_cache_trees:start_link(
+        [{size, ?BTREE_CACHE_SIZE}, {policy, ?BTREE_CACHE_POLICY}]),
+    {ok, IdBtree} = couch_btree:open(IdBtreeState, Fd, [{cache, IdBtreeCache}]),
     Views2 = lists:zipwith(
         fun(BtreeState, #view{reduce_funs=RedFuns,options=Options}=View) ->
             FunSrcs = [FunSrc || {_Name, FunSrc} <- RedFuns],
@@ -581,9 +596,10 @@ init_group(Db, Fd, #group{def_lang=Lang,views=Views}=
             <<"raw">> ->
                 Less = fun(A,B) -> A < B end
             end,
+            {ok, BtreeCache} = term_cache_trees:start_link(
+                [{size, ?BTREE_CACHE_SIZE}, {policy, ?BTREE_CACHE_POLICY}]),
             {ok, Btree} = couch_btree:open(BtreeState, Fd,
-                        [{less, Less},
-                            {reduce, ReduceFun}]),
+                [{less, Less}, {reduce, ReduceFun}, {cache, BtreeCache}]),
             View#view{btree=Btree}
         end,
         ViewStates, Views),
@@ -591,3 +607,17 @@ init_group(Db, Fd, #group{def_lang=Lang,views=Views}=
         id_btree=IdBtree, views=Views2}.
 
 
+group_btree_caches(#group{id_btree = IdBtree, views = Views}) ->
+    ViewCaches = lists:foldl(
+        fun(#view{btree = #btree{cache = Cache}}, Acc) when is_pid(Cache) ->
+                [Cache | Acc];
+            (_, Acc) ->
+                Acc
+        end,
+        [], Views),
+    case IdBtree#btree.cache of
+    Pid when is_pid(Pid) ->
+        [Pid | ViewCaches];
+    nil ->
+        ViewCaches
+    end.
