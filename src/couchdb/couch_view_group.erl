@@ -23,9 +23,6 @@
 
 -include("couch_db.hrl").
 
--define(BTREE_CACHE_SIZE, 50).
--define(BTREE_CACHE_POLICY, lru).
-
 -record(group_state, {
     type,
     db_name,
@@ -589,8 +586,12 @@ init_group(Db, Fd, #group{def_lang=Lang,views=Views}=
             Group, IndexHeader) ->
      #index_header{seq=Seq, purge_seq=PurgeSeq,
             id_btree_state=IdBtreeState, view_states=ViewStates} = IndexHeader,
+    BtreeCacheSize = list_to_integer(couch_util:trim(
+        couch_config:get("couchdb", "btree_cache_size", "50"))),
+    BtreeCachePolicy = list_to_atom(couch_util:trim(
+        couch_config:get("couchdb", "btree_cache_policy", "lru"))),
     {ok, IdBtreeCache} = term_cache_trees:start_link(
-        [{size, ?BTREE_CACHE_SIZE}, {policy, ?BTREE_CACHE_POLICY}]),
+        [{size, BtreeCacheSize}, {policy, BtreeCachePolicy}]),
     {ok, IdBtree} = couch_btree:open(IdBtreeState, Fd, [{cache, IdBtreeCache}]),
     Views2 = lists:zipwith(
         fun(BtreeState, #view{reduce_funs=RedFuns,options=Options}=View) ->
@@ -617,7 +618,7 @@ init_group(Db, Fd, #group{def_lang=Lang,views=Views}=
                 Less = fun(A,B) -> A < B end
             end,
             {ok, BtreeCache} = term_cache_trees:start_link(
-                [{size, ?BTREE_CACHE_SIZE}, {policy, ?BTREE_CACHE_POLICY}]),
+                [{size, BtreeCacheSize}, {policy, BtreeCachePolicy}]),
             {ok, Btree} = couch_btree:open(BtreeState, Fd,
                 [{less, Less}, {reduce, ReduceFun}, {cache, BtreeCache}]),
             View#view{btree=Btree}
