@@ -334,13 +334,20 @@ get_node(#btree{fd = Fd, cache = Cache}, NodePos) when is_pid(Cache) ->
         Node
     end.
 
-write_node(Bt, NodeType, NodeList) ->
+write_node(#btree{cache = Cache} = Bt, NodeType, NodeList) ->
     % split up nodes into smaller sizes
     NodeListList = chunkify(NodeList),
     % now write out each chunk and return the KeyPointer pairs for those nodes
     ResultList = [
         begin
-            {ok, Pointer} = couch_file:append_term(Bt#btree.fd, {NodeType, ANodeList}),
+            Node = {NodeType, ANodeList},
+            {ok, Pointer} = couch_file:append_term(Bt#btree.fd, Node),
+            case Cache of
+            Pid when is_pid(Pid) ->
+                ok = term_cache_trees:put(Cache, Pointer, Node);
+            nil ->
+                ok
+            end,
             {LastKey, _} = lists:last(ANodeList),
             {LastKey, {Pointer, reduce_node(Bt, NodeType, ANodeList)}}
         end
