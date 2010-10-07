@@ -18,6 +18,11 @@
 
 -include("couch_db.hrl").
 
+-define(ID_BTREE_CACHE_SIZE, 50).
+-define(ID_BTREE_CACHE_POLICY, lru).
+-define(SEQ_BTREE_CACHE_SIZE, 500).
+-define(SEQ_BTREE_CACHE_POLICY, lru).
+
 
 init({MainPid, DbName, Filepath, Fd, Options}) ->
     process_flag(trap_exit, true),
@@ -52,7 +57,8 @@ terminate(_Reason, Db) ->
     couch_file:close(Db#db.fd),
     couch_util:shutdown_sync(Db#db.compactor_pid),
     couch_util:shutdown_sync(Db#db.fd_ref_counter),
-    ok.
+    ok = term_cache_trees:stop(Db#db.by_id_btree_cache),
+    ok = term_cache_trees:stop(Db#db.by_seq_btree_cache).
 
 handle_call(get_db, _From, Db) ->
     {reply, {ok, Db}, Db};
@@ -238,6 +244,12 @@ handle_info(delayed_commit, Db) ->
             ok = gen_server:call(Db2#db.main_pid, {db_updated, Db2}),
             {noreply, Db2}
     end;
+handle_info({'EXIT', Pid, Reason}, #db{by_id_btree_cache = Pid} = Db) ->
+    ?LOG_ERROR("by_id_btree cache died with reason: ~p", [Reason]),
+    {stop, {by_id_btree_cache_died, Reason}, Db};
+handle_info({'EXIT', Pid, Reason}, #db{by_seq_btree_cache = Pid} = Db) ->
+    ?LOG_ERROR("by_seq_btree cache died with reason: ~p", [Reason]),
+    {stop, {by_seq_btree_cache_died, Reason}, Db};
 handle_info({'EXIT', _Pid, normal}, Db) ->
     {noreply, Db};
 handle_info({'EXIT', _Pid, Reason}, Db) ->
@@ -381,14 +393,20 @@ init_db(DbName, Filepath, Fd, Header0) ->
     _ -> ok
     end,
 
+    {ok, IdBtreeCache} = term_cache_trees:start_link(
+        [{size, ?ID_BTREE_CACHE_SIZE}, {policy, ?ID_BTREE_CACHE_POLICY}]),
     {ok, IdBtree} = couch_btree:open(Header#db_header.fulldocinfo_by_id_btree_state, Fd,
         [{split, fun(X) -> btree_by_id_split(X) end},
         {join, fun(X,Y) -> btree_by_id_join(X,Y) end},
-        {reduce, fun(X,Y) -> btree_by_id_reduce(X,Y) end}]),
+        {reduce, fun(X,Y) -> btree_by_id_reduce(X,Y) end},
+        {cache, IdBtreeCache}]),
+    {ok, SeqBtreeCache} = term_cache_trees:start_link(
+        [{size, ?SEQ_BTREE_CACHE_SIZE}, {policy, ?SEQ_BTREE_CACHE_POLICY}]),
     {ok, SeqBtree} = couch_btree:open(Header#db_header.docinfo_by_seq_btree_state, Fd,
             [{split, fun(X) -> btree_by_seq_split(X) end},
             {join, fun(X,Y) -> btree_by_seq_join(X,Y) end},
-            {reduce, fun(X,Y) -> btree_by_seq_reduce(X,Y) end}]),
+            {reduce, fun(X,Y) -> btree_by_seq_reduce(X,Y) end},
+            {cache, SeqBtreeCache}]),
     {ok, LocalDocsBtree} = couch_btree:open(Header#db_header.local_docs_btree_state, Fd),
     case Header#db_header.security_ptr of
     nil ->
@@ -418,7 +436,9 @@ init_db(DbName, Filepath, Fd, Header0) ->
         security_ptr = SecurityPtr,
         instance_start_time = StartTime,
         revs_limit = Header#db_header.revs_limit,
-        fsync_options = FsyncOptions
+        fsync_options = FsyncOptions,
+        by_id_btree_cache = IdBtreeCache,
+        by_seq_btree_cache = SeqBtreeCache
         }.
 
 

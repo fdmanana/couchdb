@@ -46,6 +46,17 @@
             {self(), couch_error, {Format, Args}})).
 
 
+-record(btree,
+    {fd,
+    root,
+    extract_kv = fun({Key, Value}) -> {Key, Value} end,
+    assemble_kv =  fun(Key, Value) -> {Key, Value} end,
+    less = fun(A, B) -> A < B end,
+    reduce = nil,
+    cache = nil
+    }).
+
+
 -record(rev_info,
     {
     rev,
@@ -174,7 +185,9 @@
     waiting_delayed_commit = nil,
     revs_limit = 1000,
     fsync_options = [],
-    is_sys_db = false
+    is_sys_db = false,
+    by_id_btree_cache = nil,
+    by_seq_btree_cache = nil
     }).
 
 
