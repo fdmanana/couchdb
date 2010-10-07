@@ -18,11 +18,6 @@
 
 -include("couch_db.hrl").
 
--define(ID_BTREE_CACHE_SIZE, 50).
--define(ID_BTREE_CACHE_POLICY, lru).
--define(SEQ_BTREE_CACHE_SIZE, 500).
--define(SEQ_BTREE_CACHE_POLICY, lru).
-
 
 init({MainPid, DbName, Filepath, Fd, Options}) ->
     process_flag(trap_exit, true),
@@ -393,15 +388,19 @@ init_db(DbName, Filepath, Fd, Header0) ->
     _ -> ok
     end,
 
+    BtreeCacheSize = list_to_integer(couch_util:trim(
+        couch_config:get("couchdb", "btree_cache_size", "50"))),
+    BtreeCachePolicy = list_to_atom(couch_util:trim(
+        couch_config:get("couchdb", "btree_cache_policy", "lru"))),
     {ok, IdBtreeCache} = term_cache_trees:start_link(
-        [{size, ?ID_BTREE_CACHE_SIZE}, {policy, ?ID_BTREE_CACHE_POLICY}]),
+        [{size, BtreeCacheSize}, {policy, BtreeCachePolicy}]),
     {ok, IdBtree} = couch_btree:open(Header#db_header.fulldocinfo_by_id_btree_state, Fd,
         [{split, fun(X) -> btree_by_id_split(X) end},
         {join, fun(X,Y) -> btree_by_id_join(X,Y) end},
         {reduce, fun(X,Y) -> btree_by_id_reduce(X,Y) end},
         {cache, IdBtreeCache}]),
     {ok, SeqBtreeCache} = term_cache_trees:start_link(
-        [{size, ?SEQ_BTREE_CACHE_SIZE}, {policy, ?SEQ_BTREE_CACHE_POLICY}]),
+        [{size, BtreeCacheSize}, {policy, BtreeCachePolicy}]),
     {ok, SeqBtree} = couch_btree:open(Header#db_header.docinfo_by_seq_btree_state, Fd,
             [{split, fun(X) -> btree_by_seq_split(X) end},
             {join, fun(X,Y) -> btree_by_seq_join(X,Y) end},
