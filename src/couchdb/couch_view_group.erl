@@ -350,9 +350,7 @@ terminate(Reason, #group_state{updater_pid=Update, compactor_pid=Compact}=S) ->
     reply_all(S, Reason),
     couch_util:shutdown_sync(Update),
     couch_util:shutdown_sync(Compact),
-    lists:foreach(
-        fun(Cache) -> term_cache_trees:stop(Cache) end,
-        S#group_state.btree_caches),
+    lists:foreach(fun term_cache_trees:stop/1, S#group_state.btree_caches),
     ok.
 
 code_change(_OldVsn, State, _Extra) ->
