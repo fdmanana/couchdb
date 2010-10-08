@@ -1118,8 +1118,17 @@ doc_meta_info(#doc_info{high_seq=Seq,revs=[#rev_info{rev=Rev}|RestInfo]}, RevTre
 read_doc(#db{fd=Fd}, OldStreamPointer) when is_tuple(OldStreamPointer) ->
     % 09 UPGRADE CODE
     couch_stream:old_read_term(Fd, OldStreamPointer);
-read_doc(#db{fd=Fd}, Pos) ->
-    couch_file:pread_term(Fd, Pos).
+read_doc(#db{fd = Fd, doc_cache = nil}, Pos) ->
+    couch_file:pread_term(Fd, Pos);
+read_doc(#db{fd = Fd, doc_cache = Cache}, Pos) when is_pid(Cache) ->
+    case term_cache_trees:get(Cache, Pos) of
+    {ok, Data} ->
+        {ok, Data};
+    not_found ->
+        {ok, Data} = couch_file:pread_term(Fd, Pos),
+        ok = term_cache_trees:put(Cache, Pos, Data),
+        {ok, Data}
+    end.
 
 
 doc_to_tree(#doc{revs={Start, RevIds}}=Doc) ->

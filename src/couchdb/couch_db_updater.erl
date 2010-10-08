@@ -53,7 +53,8 @@ terminate(_Reason, Db) ->
     couch_util:shutdown_sync(Db#db.compactor_pid),
     couch_util:shutdown_sync(Db#db.fd_ref_counter),
     ok = term_cache_trees:stop(Db#db.by_id_btree_cache),
-    ok = term_cache_trees:stop(Db#db.by_seq_btree_cache).
+    ok = term_cache_trees:stop(Db#db.by_seq_btree_cache),
+    ok = term_cache_trees:stop(Db#db.doc_cache).
 
 handle_call(get_db, _From, Db) ->
     {reply, {ok, Db}, Db};
@@ -245,6 +246,9 @@ handle_info({'EXIT', Pid, Reason}, #db{by_id_btree_cache = Pid} = Db) ->
 handle_info({'EXIT', Pid, Reason}, #db{by_seq_btree_cache = Pid} = Db) ->
     ?LOG_ERROR("by_seq_btree cache died with reason: ~p", [Reason]),
     {stop, {by_seq_btree_cache_died, Reason}, Db};
+handle_info({'EXIT', Pid, Reason}, #db{doc_cache = Pid} = Db) ->
+    ?LOG_ERROR("doc cache died with reason: ~p", [Reason]),
+    {stop, {doc_cache_died, Reason}, Db};
 handle_info({'EXIT', _Pid, normal}, Db) ->
     {noreply, Db};
 handle_info({'EXIT', _Pid, Reason}, Db) ->
@@ -419,6 +423,19 @@ init_db(DbName, Filepath, Fd, Header0) ->
     StartTime = ?l2b(io_lib:format("~p",
             [(MegaSecs*1000000*1000000) + (Secs*1000000) + MicroSecs])),
     {ok, RefCntr} = couch_ref_counter:start([Fd]),
+    DocCache =
+    case couch_util:trim(couch_config:get("couchdb", "use_doc_cache", "false")) of
+    "true" ->
+        DocCacheSize = list_to_integer(couch_util:trim(
+            couch_config:get("couchdb", "doc_cache_size", "50"))),
+        DocCachePolicy = list_to_atom(couch_util:trim(
+            couch_config:get("couchdb", "doc_cache_policy", "lru"))),
+        {ok, Cache} = term_cache_trees:start_link(
+            [{size, DocCacheSize}, {policy, DocCachePolicy}]),
+        Cache;
+    _ ->
+        nil
+    end,
     #db{
         update_pid=self(),
         fd=Fd,
@@ -437,7 +454,8 @@ init_db(DbName, Filepath, Fd, Header0) ->
         revs_limit = Header#db_header.revs_limit,
         fsync_options = FsyncOptions,
         by_id_btree_cache = IdBtreeCache,
-        by_seq_btree_cache = SeqBtreeCache
+        by_seq_btree_cache = SeqBtreeCache,
+        doc_cache = DocCache
         }.
 
 

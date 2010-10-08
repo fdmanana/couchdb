@@ -186,7 +186,8 @@
     fsync_options = [],
     is_sys_db = false,
     by_id_btree_cache = nil,
-    by_seq_btree_cache = nil
+    by_seq_btree_cache = nil,
+    doc_cache = nil
     }).
 
 
