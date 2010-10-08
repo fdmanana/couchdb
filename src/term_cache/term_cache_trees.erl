@@ -169,40 +169,15 @@ code_change(_OldVsn, State, _Extra) ->
 
 
 free_cache_entry(#state{policy = lru, atimes_tree = ATimes} = State) ->
-    free_cache_entry(
-        fun() ->
-            case gb_trees:is_empty(ATimes) of
-            true ->
-                none;
-            false ->
-                gb_trees:smallest(ATimes)
-            end
-        end,
-        State
-    );
-
+    free_cache_entry(gb_trees:smallest(ATimes), State);
 free_cache_entry(#state{policy = mru, atimes_tree = ATimes} = State) ->
-    free_cache_entry(
-        fun() ->
-            case gb_trees:is_empty(ATimes) of
-            true ->
-                none;
-            false ->
-                gb_trees:largest(ATimes)
-            end
-        end,
-        State
-    ).
+    free_cache_entry(gb_trees:largest(ATimes), State).
 
-free_cache_entry(ATimeFun, #state{items_tree = Items, atimes_tree = ATimes}) ->
-    case ATimeFun() of
-    none ->
-        {Items, ATimes};  % empty cache
-    {ATime, Key} ->
-        {_Item, ATime, Timer} = gb_trees:get(Key, Items),
-        cancel_timer(Key, Timer),
-        {gb_trees:delete(Key, Items), gb_trees:delete(ATime, ATimes)}
-    end.
+
+free_cache_entry({ATime, Key}, #state{items_tree = Items, atimes_tree = ATimes}) ->
+    {_Item, ATime, Timer} = gb_trees:get(Key, Items),
+    cancel_timer(Key, Timer),
+    {gb_trees:delete(Key, Items), gb_trees:delete(ATime, ATimes)}.
 
 
 set_timer(_Key, 0) ->
@@ -261,7 +236,13 @@ test_simple_lru() ->
     {ok, {ok, 666}} = ?MODULE:get(Cache, {key, "3"}),
     ok = ?MODULE:put(Cache, 666, "the beast"),
     {ok, "the beast"} = ?MODULE:get(Cache, 666),
+    ok = ?MODULE:put(Cache, 666, <<"maiden">>),
+    {ok, <<"maiden">>} = ?MODULE:get(Cache, 666),
     not_found = ?MODULE:get(Cache, "key4"),
+    ok = ?MODULE:put(Cache, 999, <<"the saint">>),
+    {ok, <<"the saint">>} = ?MODULE:get(Cache, 999),
+    ok = ?MODULE:put(Cache, 666, "the beast"),
+    {ok, "the beast"} = ?MODULE:get(Cache, 666),
     ok = ?MODULE:flush(Cache),
     not_found = ?MODULE:get(Cache, 666),
     not_found = ?MODULE:get(Cache, <<"key_2">>),
@@ -286,6 +267,8 @@ test_simple_mru() ->
     {ok, value1} = ?MODULE:get(Cache, key1),
     ok = ?MODULE:put(Cache, keyboard, "qwerty"),
     {ok, "qwerty"} = ?MODULE:get(Cache, keyboard),
+    ok = ?MODULE:put(Cache, keyboard, "azwerty"),
+    {ok, "azwerty"} = ?MODULE:get(Cache, keyboard),
     not_found = ?MODULE:get(Cache, key1),
     ok = ?MODULE:flush(Cache),
     not_found = ?MODULE:get(Cache, keyboard),
