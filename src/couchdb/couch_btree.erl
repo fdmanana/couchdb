@@ -24,7 +24,8 @@
     extract_kv = fun({Key, Value}) -> {Key, Value} end,
     assemble_kv =  fun(Key, Value) -> {Key, Value} end,
     less = fun(A, B) -> A < B end,
-    reduce = nil
+    reduce = nil,
+    cache = nil
     }).
 
 extract(#btree{extract_kv=Extract}, Value) ->
@@ -38,7 +39,11 @@ less(#btree{less=Less}, A, B) ->
 
 % pass in 'nil' for State if a new Btree.
 open(State, Fd) ->
-    {ok, #btree{root=State, fd=Fd}}.
+    open(State, Fd, []).
+
+open(State, Fd, Options) ->
+    {ok, set_options(#btree{root=State, fd=Fd}, Options)}.
+
 
 set_options(Bt, []) ->
     Bt;
@@ -49,10 +54,9 @@ set_options(Bt, [{join, Assemble}|Rest]) ->
 set_options(Bt, [{less, Less}|Rest]) ->
     set_options(Bt#btree{less=Less}, Rest);
 set_options(Bt, [{reduce, Reduce}|Rest]) ->
-    set_options(Bt#btree{reduce=Reduce}, Rest).
-
-open(State, Fd, Options) ->
-    {ok, set_options(#btree{root=State, fd=Fd}, Options)}.
+    set_options(Bt#btree{reduce=Reduce}, Rest);
+set_options(Bt, [{cache, Cache}|Rest]) ->
+    set_options(Bt#btree{cache=Cache}, Rest).
 
 get_state(#btree{root=Root}) ->
     Root.
@@ -326,17 +330,33 @@ reduce_node(#btree{reduce=R}=Bt, kv_node, NodeList) ->
     R(reduce, [assemble(Bt, K, V) || {K, V} <- NodeList]).
 
 
-get_node(#btree{fd = Fd}, NodePos) ->
+get_node(#btree{fd = Fd, cache = nil}, NodePos) ->
     {ok, {NodeType, NodeList}} = couch_file:pread_term(Fd, NodePos),
-    {NodeType, NodeList}.
+    {NodeType, NodeList};
+get_node(#btree{fd = Fd, cache = Cache}, NodePos) when is_pid(Cache) ->
+    case term_cache_trees:get(Cache, NodePos) of
+    {ok, Node} ->
+        Node;
+    not_found ->
+        {ok, {_Type, _NodeList} = Node} = couch_file:pread_term(Fd, NodePos),
+        ok = term_cache_trees:put(Cache, NodePos, Node),
+        Node
+    end.
 
-write_node(Bt, NodeType, NodeList) ->
+write_node(#btree{cache = Cache} = Bt, NodeType, NodeList) ->
     % split up nodes into smaller sizes
     NodeListList = chunkify(NodeList),
     % now write out each chunk and return the KeyPointer pairs for those nodes
     ResultList = [
         begin
-            {ok, Pointer} = couch_file:append_term(Bt#btree.fd, {NodeType, ANodeList}),
+            Node = {NodeType, ANodeList},
+            {ok, Pointer} = couch_file:append_term(Bt#btree.fd, Node),
+            case Cache of
+            Pid when is_pid(Pid) ->
+                ok = term_cache_trees:put(Cache, Pointer, Node);
+            nil ->
+                ok
+            end,
             {LastKey, _} = lists:last(ANodeList),
             {LastKey, {Pointer, reduce_node(Bt, NodeType, ANodeList)}}
         end

@@ -278,6 +278,10 @@ handle_info(delayed_commit, #group_state{db_name=DbName,group=Group}=State) ->
         {noreply, State#group_state{waiting_commit=true}}
     end;
 
+handle_info({'EXIT', Pid, Reason},
+    #group_state{group = #group{btree_cache = Pid}} = State) ->
+    {stop, {btree_cache_died, Reason}, State};
+
 handle_info({'EXIT', FromPid, {new_group, #group{db=Db}=Group}},
         #group_state{db_name=DbName,
             updater_pid=UpPid,
@@ -346,7 +350,7 @@ terminate(Reason, #group_state{updater_pid=Update, compactor_pid=Compact}=S) ->
     reply_all(S, Reason),
     couch_util:shutdown_sync(Update),
     couch_util:shutdown_sync(Compact),
-    ok.
+    ok = term_cache_trees:stop((S#group_state.group)#group.btree_cache).
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
@@ -579,7 +583,8 @@ init_group(Db, Fd, #group{def_lang=Lang,views=Views}=
             Group, IndexHeader) ->
      #index_header{seq=Seq, purge_seq=PurgeSeq,
             id_btree_state=IdBtreeState, view_states=ViewStates} = IndexHeader,
-    {ok, IdBtree} = couch_btree:open(IdBtreeState, Fd),
+    BtreeCache = new_btree_cache(),
+    {ok, IdBtree} = couch_btree:open(IdBtreeState, Fd, [{cache, BtreeCache}]),
     Views2 = lists:zipwith(
         fun(BtreeState, #view{reduce_funs=RedFuns,options=Options}=View) ->
             FunSrcs = [FunSrc || {_Name, FunSrc} <- RedFuns],
@@ -605,12 +610,22 @@ init_group(Db, Fd, #group{def_lang=Lang,views=Views}=
                 Less = fun(A,B) -> A < B end
             end,
             {ok, Btree} = couch_btree:open(BtreeState, Fd,
-                        [{less, Less},
-                            {reduce, ReduceFun}]),
+                [{less, Less}, {reduce, ReduceFun}, {cache, BtreeCache}]),
             View#view{btree=Btree}
         end,
         ViewStates, Views),
     Group#group{db=Db, fd=Fd, current_seq=Seq, purge_seq=PurgeSeq,
-        id_btree=IdBtree, views=Views2}.
+        id_btree=IdBtree, btree_cache = BtreeCache, views=Views2}.
 
-
+new_btree_cache() ->
+    case list_to_integer(couch_util:trim(
+        couch_config:get("couchdb", "btree_cache_size", "100"))) of
+    Size when Size > 0 ->
+        Policy = list_to_atom(couch_util:trim(
+            couch_config:get("couchdb", "btree_cache_policy", "lru"))),
+        {ok, BtreeCache} = term_cache_trees:start_link(
+            [{size, Size}, {policy, Policy}]),
+        BtreeCache;
+    _ ->
+        nil
+    end.

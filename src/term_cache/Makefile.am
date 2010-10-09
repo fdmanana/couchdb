@@ -10,4 +10,22 @@
 ## License for the specific language governing permissions and limitations under
 ## the License.
 
-SUBDIRS = couchdb erlang-oauth etap ibrowse mochiweb term_cache
+termcacheebindir = $(localerlanglibdir)/term_cache/ebin
+
+termcache_file_collection = \
+    term_cache_trees.erl
+
+termcacheebin_make_generated_file_list = \
+    term_cache_trees.beam
+
+termcacheebin_DATA = \
+    $(termcacheebin_make_generated_file_list)
+
+EXTRA_DIST =  \
+    $(termcache_file_collection)
+
+CLEANFILES = \
+    $(termcacheebin_make_generated_file_list)
+
+%.beam: %.erl
+	$(ERLC) $(ERLC_FLAGS) $<

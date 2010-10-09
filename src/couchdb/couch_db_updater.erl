@@ -52,7 +52,8 @@ terminate(_Reason, Db) ->
     couch_file:close(Db#db.fd),
     couch_util:shutdown_sync(Db#db.compactor_pid),
     couch_util:shutdown_sync(Db#db.fd_ref_counter),
-    ok.
+    ok = term_cache_trees:stop(Db#db.btree_cache),
+    ok = term_cache_trees:stop(Db#db.doc_cache).
 
 handle_call(get_db, _From, Db) ->
     {reply, {ok, Db}, Db};
@@ -238,6 +239,10 @@ handle_info(delayed_commit, Db) ->
             ok = gen_server:call(Db2#db.main_pid, {db_updated, Db2}),
             {noreply, Db2}
     end;
+handle_info({'EXIT', Pid, Reason}, #db{btree_cache = Pid} = Db) ->
+    {stop, {btree_cache_died, Reason}, Db};
+handle_info({'EXIT', Pid, Reason}, #db{doc_cache = Pid} = Db) ->
+    {stop, {doc_cache_died, Reason}, Db};
 handle_info({'EXIT', _Pid, normal}, Db) ->
     {noreply, Db};
 handle_info({'EXIT', _Pid, Reason}, Db) ->
@@ -381,14 +386,17 @@ init_db(DbName, Filepath, Fd, Header0) ->
     _ -> ok
     end,
 
+    BtreeCache = new_btree_cache(),
     {ok, IdBtree} = couch_btree:open(Header#db_header.fulldocinfo_by_id_btree_state, Fd,
         [{split, fun(X) -> btree_by_id_split(X) end},
         {join, fun(X,Y) -> btree_by_id_join(X,Y) end},
-        {reduce, fun(X,Y) -> btree_by_id_reduce(X,Y) end}]),
+        {reduce, fun(X,Y) -> btree_by_id_reduce(X,Y) end},
+        {cache, BtreeCache}]),
     {ok, SeqBtree} = couch_btree:open(Header#db_header.docinfo_by_seq_btree_state, Fd,
             [{split, fun(X) -> btree_by_seq_split(X) end},
             {join, fun(X,Y) -> btree_by_seq_join(X,Y) end},
-            {reduce, fun(X,Y) -> btree_by_seq_reduce(X,Y) end}]),
+            {reduce, fun(X,Y) -> btree_by_seq_reduce(X,Y) end},
+            {cache, BtreeCache}]),
     {ok, LocalDocsBtree} = couch_btree:open(Header#db_header.local_docs_btree_state, Fd),
     case Header#db_header.security_ptr of
     nil ->
@@ -418,7 +426,9 @@ init_db(DbName, Filepath, Fd, Header0) ->
         security_ptr = SecurityPtr,
         instance_start_time = StartTime,
         revs_limit = Header#db_header.revs_limit,
-        fsync_options = FsyncOptions
+        fsync_options = FsyncOptions,
+        btree_cache = BtreeCache,
+        doc_cache = new_doc_cache()
         }.
 
 
@@ -877,3 +887,22 @@ start_copy_compact(#db{name=Name,filepath=Filepath}=Db) ->
     close_db(NewDb2),
     gen_server:cast(Db#db.update_pid, {compact_done, CompactFile}).
 
+new_btree_cache() ->
+    Size = list_to_integer(couch_util:trim(
+        couch_config:get("couchdb", "database_btree_cache_size", "100"))),
+    Policy = list_to_atom(couch_util:trim(
+        couch_config:get("couchdb", "database_btree_cache_policy", "lru"))),
+    new_cache(Size, Policy).
+
+new_doc_cache() ->
+    Size = list_to_integer(
+        couch_util:trim(couch_config:get("couchdb", "doc_cache_size", "0"))),
+    Policy = list_to_atom(couch_util:trim(
+        couch_config:get("couchdb", "doc_cache_policy", "lru"))),
+    new_cache(Size, Policy).
+
+new_cache(Size, Policy) when Size > 0 ->
+    {ok, Cache} = term_cache_trees:start_link([{size, Size}, {policy, Policy}]),
+    Cache;
+new_cache(_, _) ->
+    nil.

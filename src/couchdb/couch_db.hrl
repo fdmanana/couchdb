@@ -174,7 +174,9 @@
     waiting_delayed_commit = nil,
     revs_limit = 1000,
     fsync_options = [],
-    is_sys_db = false
+    is_sys_db = false,
+    btree_cache = nil,
+    doc_cache = nil
     }).
 
 
@@ -233,7 +235,8 @@
     current_seq=0,
     purge_seq=0,
     query_server=nil,
-    waiting_delayed_commit=nil
+    waiting_delayed_commit=nil,
+    btree_cache=nil
     }).
 
 -record(view,
