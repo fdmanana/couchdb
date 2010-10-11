@@ -408,11 +408,15 @@ prepare_group({RootDir, DbName, #group{sig=Sig}=Group}, ForceReset)->
 
 get_index_header_data(#group{current_seq=Seq, purge_seq=PurgeSeq,
             id_btree=IdBtree,views=Views}) ->
-    ViewStates = [couch_btree:get_state(Btree) || #view{btree=Btree} <- Views],
-    #index_header{seq=Seq,
-            purge_seq=PurgeSeq,
-            id_btree_state=couch_btree:get_state(IdBtree),
-            view_states=ViewStates}.
+    ViewStates = [
+        {couch_btree:get_state(V#view.btree), V#view.update_seq, V#view.purge_seq} || V <- Views
+    ],
+    #index_header{
+        seq=Seq,
+        purge_seq=PurgeSeq,
+        id_btree_state=couch_btree:get_state(IdBtree),
+        view_states=ViewStates
+    }.
 
 hex_sig(GroupSig) ->
     couch_util:to_hex(?b2l(GroupSig)).
@@ -464,13 +468,27 @@ set_view_sig(#group{
             lib={[]},
             def_lang=Language,
             design_options=DesignOptions}=G) ->
-    G#group{sig=couch_util:md5(term_to_binary({Views, Language, DesignOptions}))};
+    ViewInfo = [old_view_format(V) || V <- Views],
+    G#group{sig=couch_util:md5(term_to_binary({ViewInfo, Language, DesignOptions}))};
 set_view_sig(#group{
             views=Views,
             lib=Lib,
             def_lang=Language,
             design_options=DesignOptions}=G) ->
-    G#group{sig=couch_util:md5(term_to_binary({Views, Language, DesignOptions, sort_lib(Lib)}))}.
+    ViewInfo = [old_view_format(V) || V <- Views],
+    G#group{sig=couch_util:md5(term_to_binary({ViewInfo, Language, DesignOptions, sort_lib(Lib)}))}.
+
+% Use the old view record format so group sig's don't change
+old_view_format(View) ->
+    {
+        view,
+        View#view.id_num,
+        View#view.map_names,
+        View#view.def,
+        View#view.btree,
+        View#view.reduce_funs,
+        View#view.options
+    }.
 
 sort_lib({Lib}) ->
     sort_lib(Lib, []).
@@ -578,15 +596,20 @@ delete_index_file(RootDir, DbName, GroupSig) ->
 init_group(Db, Fd, #group{views=Views}=Group, nil) ->
     init_group(Db, Fd, Group,
         #index_header{seq=0, purge_seq=couch_db:get_purge_seq(Db),
-            id_btree_state=nil, view_states=[nil || _ <- Views]});
+            id_btree_state=nil, view_states=[{nil, 0, 0} || _ <- Views]});
 init_group(Db, Fd, #group{def_lang = Lang, views = Views, name = GroupName} =
             Group, IndexHeader) ->
      #index_header{seq=Seq, purge_seq=PurgeSeq,
             id_btree_state=IdBtreeState, view_states=ViewStates} = IndexHeader,
+    StateUpdate = fun
+        ({_, _, _}=State) -> State;
+        (State) -> {State, 0, 0}
+    end,
+    ViewStates2 = lists:map(StateUpdate, ViewStates),
     BtreeCache = new_btree_cache(GroupName),
     {ok, IdBtree} = couch_btree:open(IdBtreeState, Fd, [{cache, BtreeCache}]),
     Views2 = lists:zipwith(
-        fun(BtreeState, #view{reduce_funs=RedFuns,options=Options}=View) ->
+        fun({BTState, USeq, PSeq}, #view{reduce_funs=RedFuns,options=Options}=View) ->
             FunSrcs = [FunSrc || {_Name, FunSrc} <- RedFuns],
             ReduceFun =
                 fun(reduce, KVs) ->
@@ -609,11 +632,12 @@ init_group(Db, Fd, #group{def_lang = Lang, views = Views, name = GroupName} =
             <<"raw">> ->
                 Less = fun(A,B) -> A < B end
             end,
-            {ok, Btree} = couch_btree:open(BtreeState, Fd,
-                [{less, Less}, {reduce, ReduceFun}, {cache, BtreeCache}]),
-            View#view{btree=Btree}
+            {ok, Btree} = couch_btree:open(BTState, Fd,
+                [{less, Less}, {reduce, ReduceFun}, {cache, BtreeCache}]
+            ),
+            View#view{btree=Btree, update_seq=USeq, purge_seq=PSeq}
         end,
-        ViewStates, Views),
+        ViewStates2, Views),
     Group#group{db=Db, fd=Fd, current_seq=Seq, purge_seq=PurgeSeq,
         id_btree=IdBtree, btree_cache = BtreeCache, views=Views2}.
 
