@@ -386,7 +386,7 @@ init_db(DbName, Filepath, Fd, Header0) ->
     _ -> ok
     end,
 
-    BtreeCache = new_btree_cache(),
+    BtreeCache = new_btree_cache(DbName),
     {ok, IdBtree} = couch_btree:open(Header#db_header.fulldocinfo_by_id_btree_state, Fd,
         [{split, fun(X) -> btree_by_id_split(X) end},
         {join, fun(X,Y) -> btree_by_id_join(X,Y) end},
@@ -428,7 +428,7 @@ init_db(DbName, Filepath, Fd, Header0) ->
         revs_limit = Header#db_header.revs_limit,
         fsync_options = FsyncOptions,
         btree_cache = BtreeCache,
-        doc_cache = new_doc_cache()
+        doc_cache = new_doc_cache(DbName)
         }.
 
 
@@ -887,22 +887,33 @@ start_copy_compact(#db{name=Name,filepath=Filepath}=Db) ->
     close_db(NewDb2),
     gen_server:cast(Db#db.update_pid, {compact_done, CompactFile}).
 
-new_btree_cache() ->
-    Size = list_to_integer(couch_util:trim(
-        couch_config:get("couchdb", "database_btree_cache_size", "100"))),
-    Policy = list_to_atom(couch_util:trim(
-        couch_config:get("couchdb", "database_btree_cache_policy", "lru"))),
-    new_cache(Size, Policy).
+new_btree_cache(DbName) ->
+    CacheConfig =
+    case couch_config:get("database_btree_cache", couch_util:to_list(DbName)) of
+    undefined ->
+        couch_config:get("database_btree_cache", "_default");
+    Config ->
+        Config
+    end,
+    {ok, ConfigTerm} = couch_util:parse_term(CacheConfig),
+    new_cache(ConfigTerm).
 
-new_doc_cache() ->
-    Size = list_to_integer(
-        couch_util:trim(couch_config:get("couchdb", "doc_cache_size", "0"))),
-    Policy = list_to_atom(couch_util:trim(
-        couch_config:get("couchdb", "doc_cache_policy", "lru"))),
-    new_cache(Size, Policy).
+new_doc_cache(DbName) ->
+    CacheConfig =
+    case couch_config:get("doc_cache", couch_util:to_list(DbName)) of
+    undefined ->
+        couch_config:get("doc_cache", "_default");
+    Config ->
+        Config
+    end,
+    {ok, ConfigTerm} = couch_util:parse_term(CacheConfig),
+    new_cache(ConfigTerm).
 
-new_cache(Size, Policy) when Size > 0 ->
-    {ok, Cache} = term_cache_trees:start_link([{size, Size}, {policy, Policy}]),
-    Cache;
-new_cache(_, _) ->
-    nil.
+new_cache(Config) ->
+    case couch_util:get_value(size, Config) of
+    0 ->
+        nil;
+    Size when Size > 0 ->
+        {ok, Cache} = term_cache_trees:start_link(Config),
+        Cache
+    end.

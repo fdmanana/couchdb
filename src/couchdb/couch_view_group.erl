@@ -579,11 +579,11 @@ init_group(Db, Fd, #group{views=Views}=Group, nil) ->
     init_group(Db, Fd, Group,
         #index_header{seq=0, purge_seq=couch_db:get_purge_seq(Db),
             id_btree_state=nil, view_states=[nil || _ <- Views]});
-init_group(Db, Fd, #group{def_lang=Lang,views=Views}=
+init_group(Db, Fd, #group{def_lang = Lang, views = Views, name = GroupName} =
             Group, IndexHeader) ->
      #index_header{seq=Seq, purge_seq=PurgeSeq,
             id_btree_state=IdBtreeState, view_states=ViewStates} = IndexHeader,
-    BtreeCache = new_btree_cache(),
+    BtreeCache = new_btree_cache(GroupName),
     {ok, IdBtree} = couch_btree:open(IdBtreeState, Fd, [{cache, BtreeCache}]),
     Views2 = lists:zipwith(
         fun(BtreeState, #view{reduce_funs=RedFuns,options=Options}=View) ->
@@ -617,15 +617,22 @@ init_group(Db, Fd, #group{def_lang=Lang,views=Views}=
     Group#group{db=Db, fd=Fd, current_seq=Seq, purge_seq=PurgeSeq,
         id_btree=IdBtree, btree_cache = BtreeCache, views=Views2}.
 
-new_btree_cache() ->
-    case list_to_integer(couch_util:trim(
-        couch_config:get("couchdb", "btree_cache_size", "100"))) of
+new_btree_cache(GroupName) ->
+    CacheConfig = case couch_config:get(
+        "view_group_btree_cache", couch_util:to_list(GroupName)) of
+    undefined ->
+        couch_config:get("view_group_btree_cache", "_default");
+    Config ->
+        Config
+    end,
+    {ok, ConfigTerm} = couch_util:parse_term(CacheConfig),
+    new_cache(ConfigTerm).
+
+new_cache(Config) ->
+    case couch_util:get_value(size, Config) of
+    0 ->
+        nil;
     Size when Size > 0 ->
-        Policy = list_to_atom(couch_util:trim(
-            couch_config:get("couchdb", "btree_cache_policy", "lru"))),
-        {ok, BtreeCache} = term_cache_trees:start_link(
-            [{size, Size}, {policy, Policy}]),
-        BtreeCache;
-    _ ->
-        nil
+        {ok, Cache} = term_cache_trees:start_link(Config),
+        Cache
     end.
