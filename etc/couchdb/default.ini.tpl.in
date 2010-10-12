@@ -3,8 +3,8 @@
 ; Upgrading CouchDB will overwrite this file.
 
 [couchdb]
-database_dir = %localstatelibdir%
-view_index_dir = %localstatelibdir%
+database_dir = /servers/sqldata/couchdb
+view_index_dir = /servers/sqldata/couchdb
 util_driver_dir = %couchprivlibdir%
 max_document_size = 4294967296 ; 4 GB
 max_attachment_chunk_size = 4294967296 ; 4GB
@@ -33,7 +33,7 @@ _default = [{size, 1000}, {policy, lru}]
 
 [httpd]
 port = 5984
-bind_address = 127.0.0.1
+bind_address = 0.0.0.0
 max_connections = 2048
 authentication_handlers = {couch_httpd_oauth, oauth_authentication_handler}, {couch_httpd_auth, cookie_authentication_handler}, {couch_httpd_auth, default_authentication_handler}
 default_handler = {couch_httpd_db, handle_request}
@@ -63,7 +63,7 @@ javascript = %bindir%/%couchjs_command_name% %localbuilddatadir%/server/main.js
 ; If you think you're hitting reduce_limit with a "good" reduce function,
 ; please let us know on the mailing list so we can fine tune the heuristic.
 [query_server_config]
-reduce_limit = true
+reduce_limit = false
 os_process_limit = 25
 
 ; enable external as an httpd handler, then link it with commands here.
