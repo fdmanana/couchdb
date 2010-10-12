@@ -17,19 +17,19 @@ uri_file = %localstaterundir%/couch.uri
 ; Cache policy must be one of the following: lru, mru.
 [database_btree_cache]
 ; my_database = [{size, 500}, {policy, lru}]
-_default = [{size, 100}, {policy, lru}]
+_default = [{size, 1000}, {policy, lru}]
 
 ; Cache size corresponds to maximum number of cache entries. A 0 size disables caching.
 ; Cache policy must be one of the following: lru, mru.
 [doc_cache]
 ; my_database = [{size, 100}, {policy, mru}]
-_default = [{size, 0}, {policy, lru}]
+_default = [{size, 50}, {policy, mru}]
 
 ; Cache size corresponds to maximum number of cache entries. A 0 size disables caching.
 ; Cache policy must be one of the following: lru, mru.
 [view_group_btree_cache]
 ; _design/myddoc = [{size, 500}, {policy, lru}]
-_default = [{size, 100}, {policy, lru}]
+_default = [{size, 1000}, {policy, lru}]
 
 [httpd]
 port = 5984
