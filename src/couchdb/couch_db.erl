@@ -984,7 +984,10 @@ handle_call(is_idle, _From, #db{fd_ref_counter=RefCntr, compactor_pid=Compact,
     % Idle means no referrers. Unless in the middle of a compaction file switch,
     % there are always at least 2 referrers, couch_db_updater and us.
     {reply, (Delay == nil) andalso (Compact == nil) andalso (couch_ref_counter:count(RefCntr) == 2), Db};
-handle_call({db_updated, NewDb}, _From, #db{fd_ref_counter=OldRefCntr}) ->
+handle_call(get_db, _From, Db) ->
+    {reply, {ok, Db}, Db}.
+
+handle_cast({db_updated, NewDb}, #db{fd_ref_counter=OldRefCntr}) ->
     #db{fd_ref_counter=NewRefCntr}=NewDb,
     case NewRefCntr =:= OldRefCntr of
     true -> ok;
@@ -992,11 +995,7 @@ handle_call({db_updated, NewDb}, _From, #db{fd_ref_counter=OldRefCntr}) ->
         couch_ref_counter:add(NewRefCntr),
         couch_ref_counter:drop(OldRefCntr)
     end,
-    {reply, ok, NewDb};
-handle_call(get_db, _From, Db) ->
-    {reply, {ok, Db}, Db}.
-
-
+    {noreply, NewDb};
 handle_cast(Msg, Db) ->
     ?LOG_ERROR("Bad cast message received for db ~s: ~p", [Db#db.name, Msg]),
     exit({error, Msg}).
