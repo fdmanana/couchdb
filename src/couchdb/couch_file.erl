@@ -20,7 +20,8 @@
 -record(file, {
     fd,
     tail_append_begin = 0, % 09 UPGRADE CODE
-    eof = 0
+    eof = 0,
+    readers = []
     }).
 
 -export([open/1, open/2, close/1, bytes/1, sync/1, append_binary/2,old_pread/3]).
@@ -120,7 +121,8 @@ pread_binary(Fd, Pos) ->
 
 
 pread_iolist(Fd, Pos) ->
-    gen_server:call(Fd, {pread_iolist, Pos}, infinity).
+    ReaderFd = get_reader(Fd),
+    gen_server:call(ReaderFd, {pread_iolist, Pos}, infinity).
 
 %%----------------------------------------------------------------------
 %% Purpose: The length of a file, in bytes.
@@ -217,6 +219,9 @@ write_header(Fd, Data) ->
     gen_server:call(Fd, {write_header, FinalBin}, infinity).
 
 
+get_reader(Fd) ->
+    {ok, ReaderFd} = gen_server:call(Fd, get_reader, infinity),
+    ReaderFd.
 
 
 init_status_error(ReturnPid, Ref, Error) ->
@@ -227,10 +232,11 @@ init_status_error(ReturnPid, Ref, Error) ->
 
 init({Filepath, Options, ReturnPid, Ref}) ->
     process_flag(trap_exit, true),
+    OpenOptions = file_open_options(Options),
     case lists:member(create, Options) of
     true ->
         filelib:ensure_dir(Filepath),
-        case file:open(Filepath, [read, append, raw, binary]) of
+        case file:open(Filepath, OpenOptions) of
         {ok, Fd} ->
             {ok, Length} = file:position(Fd, eof),
             case Length > 0 of
@@ -244,14 +250,16 @@ init({Filepath, Options, ReturnPid, Ref}) ->
                     ok = file:truncate(Fd),
                     ok = file:sync(Fd),
                     maybe_track_open_os_files(Options),
-                    {ok, #file{fd=Fd}};
+                    Readers = spawn_readers(Filepath, Options),
+                    {ok, #file{fd = Fd, readers = Readers}};
                 false ->
                     ok = file:close(Fd),
                     init_status_error(ReturnPid, Ref, file_exists)
                 end;
             false ->
                 maybe_track_open_os_files(Options),
-                {ok, #file{fd=Fd}}
+                Readers = spawn_readers(Filepath, Options),
+                {ok, #file{fd = Fd, readers = Readers}}
             end;
         Error ->
             init_status_error(ReturnPid, Ref, Error)
@@ -260,28 +268,70 @@ init({Filepath, Options, ReturnPid, Ref}) ->
         % open in read mode first, so we don't create the file if it doesn't exist.
         case file:open(Filepath, [read, raw]) of
         {ok, Fd_Read} ->
-            {ok, Fd} = file:open(Filepath, [read, append, raw, binary]),
+            {ok, Fd} = file:open(Filepath, OpenOptions),
             ok = file:close(Fd_Read),
             maybe_track_open_os_files(Options),
             {ok, Length} = file:position(Fd, eof),
-            {ok, #file{fd=Fd, eof=Length}};
+            Readers = spawn_readers(Filepath, Options),
+            {ok, #file{fd = Fd, eof = Length, readers = Readers}};
         Error ->
             init_status_error(ReturnPid, Ref, Error)
         end
     end.
+
+file_open_options(Options) ->
+    case lists:member(read_only, Options) of
+    true ->
+        [read, raw, binary];
+    false ->
+        [read, append, raw, binary]
+    end.
+
+spawn_readers(Filepath, Options) ->
+    case lists:member(read_only, Options) of
+    true ->
+        [];
+    false ->
+        lists:map(
+            fun(_) ->
+                {ok, ReaderFd} = couch_file:open(Filepath, [read_only]),
+                ReaderFd
+            end,
+            lists:seq(1, num_reader_processes()))
+    end.
+
+num_reader_processes() ->
+    num_reader_processes(erlang:system_info(cpu_topology)).
+
+num_reader_processes(undefined) ->
+    2;
+num_reader_processes({_Tag, {logical, _Id}}) ->
+    1;
+num_reader_processes({_Tag, SubLevel}) ->
+    num_reader_processes(SubLevel);
+num_reader_processes(Levels) when is_list(Levels) ->
+    lists:foldl(
+        fun(Lev, Acc) -> Acc + num_reader_processes(Lev) end,
+        0,
+        Levels).
 
 maybe_track_open_os_files(FileOptions) ->
     case lists:member(sys_db, FileOptions) of
     true ->
         ok;
     false ->
+        % TODO: add number of readers to open_os_files stat
         couch_stats_collector:track_process_count({couchdb, open_os_files})
     end.
 
 terminate(_Reason, #file{fd = Fd}) ->
     ok = file:close(Fd).
 
-
+handle_call(get_reader, _From, #file{readers = []} = File) ->
+    {reply, {ok, self()}, File};
+handle_call(get_reader, _From, #file{readers = Readers} = File) ->
+    ReaderFd = lists:nth(random:uniform(length(Readers)), Readers),
+    {reply, {ok, ReaderFd}, File};
 handle_call({pread_iolist, Pos}, _From, File) ->
     {LenIolist, NextPos} = read_raw_iolist_int(File, Pos, 4),
     case iolist_to_binary(LenIolist) of
