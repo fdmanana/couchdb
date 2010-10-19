@@ -316,12 +316,11 @@ num_reader_processes(Levels) when is_list(Levels) ->
         Levels).
 
 maybe_track_open_os_files(FileOptions) ->
-    case lists:member(sys_db, FileOptions) of
-    true ->
-        ok;
-    false ->
-        % TODO: add number of readers to open_os_files stat
-        couch_stats_collector:track_process_count({couchdb, open_os_files})
+    case FileOptions -- [sys_db, read_only] of
+    FileOptions ->
+        couch_stats_collector:track_process_count({couchdb, open_os_files});
+    _ ->
+        ok
     end.
 
 terminate(_Reason, #file{fd = Fd, readers = Readers}) ->
