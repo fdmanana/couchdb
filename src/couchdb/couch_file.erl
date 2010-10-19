@@ -312,7 +312,7 @@ num_reader_processes({_Tag, SubLevel}) ->
 num_reader_processes(Levels) when is_list(Levels) ->
     lists:foldl(
         fun(Lev, Acc) -> Acc + num_reader_processes(Lev) end,
-        0,
+        1,
         Levels).
 
 maybe_track_open_os_files(FileOptions) ->
