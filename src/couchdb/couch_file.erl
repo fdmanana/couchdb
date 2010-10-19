@@ -324,7 +324,8 @@ maybe_track_open_os_files(FileOptions) ->
         couch_stats_collector:track_process_count({couchdb, open_os_files})
     end.
 
-terminate(_Reason, #file{fd = Fd}) ->
+terminate(_Reason, #file{fd = Fd, readers = Readers}) ->
+    lists:foreach(fun close/1, Readers),
     ok = file:close(Fd).
 
 handle_call(get_reader, _From, #file{readers = []} = File) ->
