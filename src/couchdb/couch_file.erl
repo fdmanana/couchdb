@@ -284,6 +284,7 @@ file_open_options(Options) ->
     end.
 
 spawn_readers(Filepath, Options) ->
+    {error, {no_such_group, _}} = pg2:get_members(self()),
     pg2:create(self()),
     case lists:member(read_only, Options) of
     true ->
