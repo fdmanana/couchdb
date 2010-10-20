@@ -220,8 +220,8 @@ write_header(Fd, Data) ->
 
 
 get_reader(Fd) ->
-    {ok, ReaderFd} = gen_server:call(Fd, get_reader, infinity),
-    ReaderFd.
+    {ok, ReaderFds} = gen_server:call(Fd, get_readers, infinity),
+    lists:nth(random:uniform(length(ReaderFds)), ReaderFds).
 
 
 init_status_error(ReturnPid, Ref, Error) ->
@@ -327,11 +327,10 @@ terminate(_Reason, #file{fd = Fd, readers = Readers}) ->
     lists:foreach(fun close/1, Readers),
     ok = file:close(Fd).
 
-handle_call(get_reader, _From, #file{readers = []} = File) ->
-    {reply, {ok, self()}, File};
-handle_call(get_reader, _From, #file{readers = Readers} = File) ->
-    ReaderFd = lists:nth(random:uniform(length(Readers)), Readers),
-    {reply, {ok, ReaderFd}, File};
+handle_call(get_readers, _From, #file{readers = []} = File) ->
+    {reply, {ok, [self()]}, File};
+handle_call(get_readers, _From, #file{readers = Readers} = File) ->
+    {reply, {ok, Readers}, File};
 handle_call({pread_iolist, Pos}, _From, File) ->
     {LenIolist, NextPos} = read_raw_iolist_int(File, Pos, 4),
     case iolist_to_binary(LenIolist) of
