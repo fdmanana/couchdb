@@ -121,7 +121,7 @@ pread_binary(Fd, Pos) ->
 
 
 pread_iolist(Fd, Pos) ->
-    ReaderFd = pg2:get_closest_pid(Fd),
+    ReaderFd = pg2:get_closest_pid({readers, Fd}),
     true = is_pid(ReaderFd),
     gen_server:call(ReaderFd, {pread_iolist, Pos}, infinity).
 
@@ -284,18 +284,18 @@ file_open_options(Options) ->
     end.
 
 spawn_readers(Filepath, Options) ->
-    {error, {no_such_group, _}} = pg2:get_members(self()),
-    pg2:create(self()),
+    {error, {no_such_group, _}} = pg2:get_members({readers, self()}),
+    pg2:create({readers, self()}),
     case lists:member(read_only, Options) of
     true ->
-        ok = pg2:join(self(), self()),
+        ok = pg2:join({readers, self()}, self()),
         [];
     false ->
         ReaderCount = couch_config:get("couchdb", "file_readers", "4"),
         lists:map(
             fun(_) ->
                 {ok, ReaderFd} = couch_file:open(Filepath, [read_only]),
-                ok = pg2:join(self(), ReaderFd),
+                ok = pg2:join({readers, self()}, ReaderFd),
                 ReaderFd
             end,
             lists:seq(1, list_to_integer(ReaderCount)))
@@ -310,7 +310,7 @@ maybe_track_open_os_files(FileOptions) ->
     end.
 
 terminate(_Reason, #file{fd = Fd, readers = Readers}) ->
-    pg2:delete(self()),
+    pg2:delete({readers, self()}),
     lists:foreach(fun close/1, Readers),
     ok = file:close(Fd).
 
