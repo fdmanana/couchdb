@@ -292,28 +292,14 @@ spawn_readers(Filepath, Options) ->
     true ->
         [];
     false ->
+        ReaderCount = couch_config:get("couchdb", "file_readers", "4"),
         lists:map(
             fun(_) ->
                 {ok, ReaderFd} = couch_file:open(Filepath, [read_only]),
                 ReaderFd
             end,
-            lists:seq(1, num_reader_processes()))
+            lists:seq(1, list_to_integer(ReaderCount)))
     end.
-
-num_reader_processes() ->
-    num_reader_processes(erlang:system_info(cpu_topology)).
-
-num_reader_processes(undefined) ->
-    2;
-num_reader_processes({_Tag, {logical, _Id}}) ->
-    1;
-num_reader_processes({_Tag, SubLevel}) ->
-    num_reader_processes(SubLevel);
-num_reader_processes(Levels) when is_list(Levels) ->
-    lists:foldl(
-        fun(Lev, Acc) -> Acc + num_reader_processes(Lev) end,
-        1,
-        Levels).
 
 maybe_track_open_os_files(FileOptions) ->
     case FileOptions -- [sys_db, read_only] of

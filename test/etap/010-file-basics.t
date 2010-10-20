@@ -27,6 +27,7 @@ main(_) ->
     ok.
 
 test() ->
+    {ok, _} = couch_config:start_link([]),
     etap:is({error, enoent}, couch_file:open("not a real file"),
         "Opening a non-existant file should return an enoent error."),
 

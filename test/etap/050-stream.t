@@ -30,6 +30,7 @@ read_all(Fd, PosList) ->
     iolist_to_binary(Data).
 
 test() ->
+    {ok, _} = couch_config:start_link([]),
     {ok, Fd} = couch_file:open("test/etap/temp.050", [create,overwrite]),
     {ok, Stream} = couch_stream:open(Fd),
 

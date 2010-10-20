@@ -33,6 +33,7 @@ main(_) ->
     ok.
 
 test() ->
+    {ok, _} = couch_config:start_link([]),
     {ok, Fd} = couch_file:open(filename(), [create,overwrite]),
 
     etap:is({ok, 0}, couch_file:bytes(Fd),
