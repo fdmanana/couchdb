@@ -121,7 +121,8 @@ pread_binary(Fd, Pos) ->
 
 
 pread_iolist(Fd, Pos) ->
-    ReaderFd = get_reader(Fd),
+    ReaderFd = pg2:get_closest_pid(Fd),
+    true = is_pid(ReaderFd),
     gen_server:call(ReaderFd, {pread_iolist, Pos}, infinity).
 
 %%----------------------------------------------------------------------
@@ -219,11 +220,6 @@ write_header(Fd, Data) ->
     gen_server:call(Fd, {write_header, FinalBin}, infinity).
 
 
-get_reader(Fd) ->
-    {ok, ReaderFds} = gen_server:call(Fd, get_readers, infinity),
-    lists:nth(random:uniform(length(ReaderFds)), ReaderFds).
-
-
 init_status_error(ReturnPid, Ref, Error) ->
     ReturnPid ! {Ref, self(), Error},
     ignore.
@@ -288,14 +284,17 @@ file_open_options(Options) ->
     end.
 
 spawn_readers(Filepath, Options) ->
+    pg2:create(self()),
     case lists:member(read_only, Options) of
     true ->
+        ok = pg2:join(self(), self()),
         [];
     false ->
         ReaderCount = couch_config:get("couchdb", "file_readers", "4"),
         lists:map(
             fun(_) ->
                 {ok, ReaderFd} = couch_file:open(Filepath, [read_only]),
+                ok = pg2:join(self(), ReaderFd),
                 ReaderFd
             end,
             lists:seq(1, list_to_integer(ReaderCount)))
@@ -310,13 +309,10 @@ maybe_track_open_os_files(FileOptions) ->
     end.
 
 terminate(_Reason, #file{fd = Fd, readers = Readers}) ->
+    pg2:delete(self()),
     lists:foreach(fun close/1, Readers),
     ok = file:close(Fd).
 
-handle_call(get_readers, _From, #file{readers = []} = File) ->
-    {reply, {ok, [self()]}, File};
-handle_call(get_readers, _From, #file{readers = Readers} = File) ->
-    {reply, {ok, Readers}, File};
 handle_call({pread_iolist, Pos}, _From, File) ->
     {LenIolist, NextPos} = read_raw_iolist_int(File, Pos, 4),
     case iolist_to_binary(LenIolist) of
