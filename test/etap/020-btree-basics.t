@@ -35,6 +35,7 @@ main(_) ->
 %% broken into multiple nodes. AKA "How do we appropiately detect if multiple
 %% nodes were created."
 test()->
+    {ok, _} = couch_config:start_link([]),
     Sorted = [{Seq, random:uniform()} || Seq <- lists:seq(1, rows())],
     etap:ok(test_kvs(Sorted), "Testing sorted keys"),
     etap:ok(test_kvs(lists:reverse(Sorted)), "Testing reversed sorted keys"),

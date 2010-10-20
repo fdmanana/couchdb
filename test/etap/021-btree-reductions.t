@@ -30,6 +30,7 @@ main(_) ->
     ok.
 
 test()->
+    {ok, _} = couch_config:start_link([]),
     ReduceFun = fun
         (reduce, KVs) -> length(KVs);
         (rereduce, Reds) -> lists:sum(Reds)
