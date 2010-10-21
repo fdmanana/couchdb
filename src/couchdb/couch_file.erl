@@ -17,7 +17,6 @@
 
 -define(SIZE_BLOCK, 4096).
 -define(MAX_READ_BATCH_SIZE, 20).
--define(MAX_WRITE_BATCH_SIZE, 10).
 
 -record(file, {
     fd,
@@ -111,20 +110,14 @@ append_term_md5(FileGroup, Term) ->
 
 append_binary(#file_group{writer_fd = Fd}, Bin) ->
     Size = iolist_size(Bin),
-    Fd ! {append_bin, [<<0:1/integer,Size:31/integer>>, Bin], self()},
-    receive
-    {Fd, Reply} ->
-        Reply
-    end.
-
+    gen_server:call(Fd, {append_bin,
+            [<<0:1/integer,Size:31/integer>>, Bin]}, infinity).
+    
 append_binary_md5(#file_group{writer_fd = Fd}, Bin) ->
     Size = iolist_size(Bin),
-    WriteBin = [<<1:1/integer,Size:31/integer>>, couch_util:md5(Bin), Bin],
-    Fd ! {append_bin, WriteBin, self()},
-    receive
-    {Fd, Reply} ->
-        Reply
-    end.
+    gen_server:call(Fd, {append_bin,
+            [<<1:1/integer,Size:31/integer>>, couch_util:md5(Bin), Bin]}, infinity).
+
 
 %%----------------------------------------------------------------------
 %% Purpose: Reads a term from a file that was written with append_term
@@ -251,11 +244,7 @@ write_header(#file_group{writer_fd = Fd}, Data) ->
     Md5 = couch_util:md5(Bin),
     % now we assemble the final header binary and write to disk
     FinalBin = <<Md5/binary, Bin/binary>>,
-    Fd ! {write_header, FinalBin, self()},
-    receive
-    {Fd, Result} ->
-        Result
-    end.
+    gen_server:call(Fd, {write_header, FinalBin}, infinity).
 
 init_status_error(nil, _Ref, _Error) ->
     ignore;
@@ -345,6 +334,30 @@ handle_call({truncate, Pos}, _From, #file{fd=Fd}=File) ->
     Error ->
         {reply, Error, File}
     end;
+handle_call({append_bin, Bin}, _From, #file{fd=Fd, eof=Pos}=File) ->
+    Blocks = make_blocks(Pos rem ?SIZE_BLOCK, Bin),
+    case file:write(Fd, Blocks) of
+    ok ->
+        {reply, {ok, Pos}, File#file{eof=Pos+iolist_size(Blocks)}};
+    Error ->
+        {reply, Error, File}
+    end;
+handle_call({write_header, Bin}, _From, #file{fd=Fd, eof=Pos}=File) ->
+    BinSize = size(Bin),
+    case Pos rem ?SIZE_BLOCK of
+    0 ->
+        Padding = <<>>;
+    BlockOffset ->
+        Padding = <<0:(8*(?SIZE_BLOCK-BlockOffset))>>
+    end,
+    FinalBin = [Padding, <<1, BinSize:32/integer>> | make_blocks(5, [Bin])],
+    case file:write(Fd, FinalBin) of
+    ok ->
+        {reply, ok, File#file{eof=Pos+iolist_size(FinalBin)}};
+    Error ->
+        {reply, Error, File}
+    end;
+
 
 handle_call({upgrade_old_header, Prefix}, _From, #file{fd=Fd}=File) ->
     case (catch read_old_header(Fd, Prefix)) of
@@ -354,7 +367,7 @@ handle_call({upgrade_old_header, Prefix}, _From, #file{fd=Fd}=File) ->
         Md5 = couch_util:md5(Bin),
         % now we assemble the final header binary and write to disk
         FinalBin = <<Md5/binary, Bin/binary>>,
-        {ok, _} = do_write_header(FinalBin, File),
+        {reply, ok, _} = handle_call({write_header, FinalBin}, ok, File),
         ok = write_old_header(Fd, <<"upgraded">>, TailAppendBegin),
         {reply, ok, File#file{tail_append_begin=TailAppendBegin}};
     _Error ->
@@ -512,38 +525,6 @@ handle_info({pread_iolist, Pos, From}, File) ->
         {noreply, File},
         lists:zip3(IoLists, IoListTypes, ReplyToList));
 
-handle_info({append_bin, Bin, From}, #file{fd = Fd, eof = Pos} = File) ->
-    {BinsToWrite, ReplyToList} = collect_append_bin_calls(
-        [Bin], [From], ?MAX_WRITE_BATCH_SIZE),
-    {Data, Offsets, LastPos} = lists:foldl(
-        fun(Bin0, {IoLists, Offs, Eof}) ->
-            Blocks = make_blocks(Eof rem ?SIZE_BLOCK, Bin0),
-            NewEof = Eof + iolist_size(Blocks),
-            {[Blocks | IoLists], [Eof | Offs], NewEof}
-        end,
-        {[], [], Pos},
-        BinsToWrite),
-    case file:write(Fd, lists:reverse(Data)) of
-    ok ->
-        lists:foreach(
-            fun({ReplyTo, EofPos}) -> ReplyTo ! {self(), {ok, EofPos}} end,
-            lists:zip(ReplyToList, lists:reverse(Offsets))),
-        {noreply, File#file{eof = LastPos}};
-    Error ->
-        lists:foreach(fun(To) -> To ! {self(), Error} end, ReplyToList),
-        {noreply, File}
-    end;
-
-handle_info({write_header, Bin, From}, File) ->
-    case do_write_header(Bin, File) of
-    {ok, NewPos} ->
-        From ! {self(), ok},
-        {noreply, File#file{eof = NewPos}};
-    Error ->
-        From ! {self(), Error},
-        {noreply, File}
-    end;
-
 handle_info({'EXIT', _, normal}, Fd) ->
     {noreply, Fd};
 handle_info({'EXIT', _, Reason}, Fd) ->
@@ -558,16 +539,6 @@ collect_pread_iolist_calls(LocAcc, PidAcc, Max) ->
         collect_pread_iolist_calls([{Pos, 4} | LocAcc], [From | PidAcc], Max)
     after 0 ->
         {lists:reverse(LocAcc), lists:reverse(PidAcc)}
-    end.
-
-collect_append_bin_calls(BinAcc, PidAcc, Max) when length(BinAcc) >= Max ->
-    {lists:reverse(BinAcc), lists:reverse(PidAcc)};
-collect_append_bin_calls(BinAcc, PidAcc, Max) ->
-    receive
-    {append_bin, Bin, From} ->
-        collect_append_bin_calls([Bin | BinAcc], [From | PidAcc], Max)
-    after 0 ->
-        {lists:reverse(BinAcc), lists:reverse(PidAcc)}
     end.
 
 
@@ -591,22 +562,6 @@ load_header(Fd, Block) ->
         iolist_to_binary(remove_block_prefixes(1, RawBin)),
     Md5Sig = couch_util:md5(HeaderBin),
     {ok, HeaderBin}.
-
-do_write_header(Bin, #file{fd = Fd, eof = Pos}) ->
-    BinSize = size(Bin),
-    Padding = case Pos rem ?SIZE_BLOCK of
-    0 ->
-        <<>>;
-    BlockOffset ->
-        <<0:(8 * (?SIZE_BLOCK - BlockOffset))>>
-    end,
-    FinalBin = [Padding, <<1, BinSize:32/integer>> | make_blocks(5, [Bin])],
-    case file:write(Fd, FinalBin) of
-    ok ->
-        {ok, Pos + iolist_size(FinalBin)};
-    Error ->
-        Error
-    end.
 
 read_raw_iolists_int(#file{fd=Fd, tail_append_begin=TAB}, PosLens) ->
     {Locations, Offsets} = lists:foldr(
