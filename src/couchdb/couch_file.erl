@@ -16,6 +16,7 @@
 -include("couch_db.hrl").
 
 -define(SIZE_BLOCK, 4096).
+-define(MAX_READ_BATCH_SIZE, 20).
 
 -record(file, {
     fd,
@@ -23,12 +24,18 @@
     eof = 0
     }).
 
+-record(file_group, {
+    writer_fd,
+    reader_fd
+}).
+
 -export([open/1, open/2, close/1, bytes/1, sync/1, append_binary/2,old_pread/3]).
 -export([append_term/2, pread_term/2, pread_iolist/2, write_header/2]).
 -export([pread_binary/2, read_header/1, truncate/2, upgrade_old_header/2]).
 -export([append_term_md5/2,append_binary_md5/2]).
 -export([init/1, terminate/2, handle_call/3, handle_cast/2, code_change/3, handle_info/2]).
 -export([delete/2,delete/3,init_delete_dir/1]).
+-export([start_ref_counter/1, unlink/1]).
 
 %%----------------------------------------------------------------------
 %% Args:   Valid Options are [create] and [create,overwrite].
@@ -44,7 +51,7 @@ open(Filepath, Options) ->
     case gen_server:start_link(couch_file,
             {Filepath, Options, self(), Ref = make_ref()}, []) of
     {ok, Fd} ->
-        {ok, Fd};
+        {ok, create_group(Filepath, Fd)};
     ignore ->
         % get the error
         receive
@@ -60,6 +67,24 @@ open(Filepath, Options) ->
     end.
 
 
+create_group(Filepath, WriterFd) ->
+    {ok, ReaderFd} = gen_server:start_link(
+        couch_file, {Filepath, [read_only], nil, nil}, []),
+    #file_group{writer_fd = WriterFd, reader_fd = ReaderFd}.
+
+
+%% Purpose: unlinks the caller from all the PIDs associated with the file.
+unlink(#file_group{writer_fd = WriterFd, reader_fd = ReaderFd}) ->
+    erlang:unlink(WriterFd),
+    erlang:unlink(ReaderFd).
+
+
+%% Purpose: create a reference counter associated to the given file.
+start_ref_counter(#file_group{writer_fd = WriterFd, reader_fd = ReaderFd}) ->
+    {ok, Ref} = couch_ref_counter:start([WriterFd, ReaderFd]),
+    Ref.
+
+
 %%----------------------------------------------------------------------
 %% Purpose: To append an Erlang term to the end of the file.
 %% Args:    Erlang term to serialize and append to the file.
@@ -68,11 +93,11 @@ open(Filepath, Options) ->
 %%  or {error, Reason}.
 %%----------------------------------------------------------------------
 
-append_term(Fd, Term) ->
-    append_binary(Fd, term_to_binary(Term)).
+append_term(FileGroup, Term) ->
+    append_binary(FileGroup, term_to_binary(Term)).
     
-append_term_md5(Fd, Term) ->
-    append_binary_md5(Fd, term_to_binary(Term)).
+append_term_md5(FileGroup, Term) ->
+    append_binary_md5(FileGroup, term_to_binary(Term)).
 
 
 %%----------------------------------------------------------------------
@@ -83,12 +108,12 @@ append_term_md5(Fd, Term) ->
 %%  or {error, Reason}.
 %%----------------------------------------------------------------------
 
-append_binary(Fd, Bin) ->
+append_binary(#file_group{writer_fd = Fd}, Bin) ->
     Size = iolist_size(Bin),
     gen_server:call(Fd, {append_bin,
             [<<0:1/integer,Size:31/integer>>, Bin]}, infinity).
     
-append_binary_md5(Fd, Bin) ->
+append_binary_md5(#file_group{writer_fd = Fd}, Bin) ->
     Size = iolist_size(Bin),
     gen_server:call(Fd, {append_bin,
             [<<1:1/integer,Size:31/integer>>, couch_util:md5(Bin), Bin]}, infinity).
@@ -119,8 +144,12 @@ pread_binary(Fd, Pos) ->
     {ok, iolist_to_binary(L)}.
 
 
-pread_iolist(Fd, Pos) ->
-    gen_server:call(Fd, {pread_iolist, Pos}, infinity).
+pread_iolist(#file_group{reader_fd = Fd}, Pos) ->
+    Fd ! {pread_iolist, Pos, self()},
+    receive
+    {Fd, Result} ->
+        Result
+    end.
 
 %%----------------------------------------------------------------------
 %% Purpose: The length of a file, in bytes.
@@ -129,7 +158,7 @@ pread_iolist(Fd, Pos) ->
 %%----------------------------------------------------------------------
 
 % length in bytes
-bytes(Fd) ->
+bytes(#file_group{reader_fd = Fd}) ->
     gen_server:call(Fd, bytes, infinity).
 
 %%----------------------------------------------------------------------
@@ -138,7 +167,7 @@ bytes(Fd) ->
 %%  or {error, Reason}.
 %%----------------------------------------------------------------------
 
-truncate(Fd, Pos) ->
+truncate(#file_group{writer_fd = Fd}, Pos) ->
     gen_server:call(Fd, {truncate, Pos}, infinity).
 
 %%----------------------------------------------------------------------
@@ -150,15 +179,16 @@ truncate(Fd, Pos) ->
 sync(Filepath) when is_list(Filepath) ->
     {ok, Fd} = file:open(Filepath, [append, raw]),
     try file:sync(Fd) after file:close(Fd) end;
-sync(Fd) ->
+sync(#file_group{writer_fd = Fd}) ->
     gen_server:call(Fd, sync, infinity).
 
 %%----------------------------------------------------------------------
 %% Purpose: Close the file.
 %% Returns: ok
 %%----------------------------------------------------------------------
-close(Fd) ->
-    couch_util:shutdown_sync(Fd).
+close(#file_group{writer_fd = WriterFd, reader_fd = ReaderFd}) ->
+    couch_util:shutdown_sync(WriterFd),
+    couch_util:shutdown_sync(ReaderFd).
 
 
 delete(RootDir, Filepath) ->
@@ -192,16 +222,16 @@ init_delete_dir(RootDir) ->
 
 
 % 09 UPGRADE CODE
-old_pread(Fd, Pos, Len) ->
+old_pread(#file_group{writer_fd = Fd}, Pos, Len) ->
     {ok, <<RawBin:Len/binary>>, false} = gen_server:call(Fd, {pread, Pos, Len}, infinity),
     {ok, RawBin}.
 
 % 09 UPGRADE CODE
-upgrade_old_header(Fd, Sig) ->
+upgrade_old_header(#file_group{writer_fd = Fd}, Sig) ->
     gen_server:call(Fd, {upgrade_old_header, Sig}, infinity).
 
 
-read_header(Fd) ->
+read_header(#file_group{writer_fd = Fd}) ->
     case gen_server:call(Fd, find_header, infinity) of
     {ok, Bin} ->
         {ok, binary_to_term(Bin)};
@@ -209,16 +239,15 @@ read_header(Fd) ->
         Else
     end.
 
-write_header(Fd, Data) ->
+write_header(#file_group{writer_fd = Fd}, Data) ->
     Bin = term_to_binary(Data),
     Md5 = couch_util:md5(Bin),
     % now we assemble the final header binary and write to disk
     FinalBin = <<Md5/binary, Bin/binary>>,
     gen_server:call(Fd, {write_header, FinalBin}, infinity).
 
-
-
-
+init_status_error(nil, _Ref, _Error) ->
+    ignore;
 init_status_error(ReturnPid, Ref, Error) ->
     ReturnPid ! {Ref, self(), Error},
     ignore.
@@ -227,10 +256,11 @@ init_status_error(ReturnPid, Ref, Error) ->
 
 init({Filepath, Options, ReturnPid, Ref}) ->
     process_flag(trap_exit, true),
+    OpenOptions = file_open_options(Options),
     case lists:member(create, Options) of
     true ->
         filelib:ensure_dir(Filepath),
-        case file:open(Filepath, [read, append, raw, binary]) of
+        case file:open(Filepath, OpenOptions) of
         {ok, Fd} ->
             {ok, Length} = file:position(Fd, eof),
             case Length > 0 of
@@ -260,7 +290,7 @@ init({Filepath, Options, ReturnPid, Ref}) ->
         % open in read mode first, so we don't create the file if it doesn't exist.
         case file:open(Filepath, [read, raw]) of
         {ok, Fd_Read} ->
-            {ok, Fd} = file:open(Filepath, [read, append, raw, binary]),
+            {ok, Fd} = file:open(Filepath, OpenOptions),
             ok = file:close(Fd_Read),
             maybe_track_open_os_files(Options),
             {ok, Length} = file:position(Fd, eof),
@@ -270,39 +300,30 @@ init({Filepath, Options, ReturnPid, Ref}) ->
         end
     end.
 
-maybe_track_open_os_files(FileOptions) ->
-    case lists:member(sys_db, FileOptions) of
+file_open_options(Options) ->
+    case lists:member(read_only, Options) of
     true ->
-        ok;
+        [read, raw, binary];
     false ->
-        couch_stats_collector:track_process_count({couchdb, open_os_files})
+        [read, append, raw, binary]
+    end.
+
+maybe_track_open_os_files(FileOptions) ->
+    case FileOptions -- [sys_db, read_only] of
+    FileOptions ->
+        couch_stats_collector:track_process_count({couchdb, open_os_files});
+    _ ->
+        ok
     end.
 
 terminate(_Reason, #file{fd = Fd}) ->
     ok = file:close(Fd).
 
-
-handle_call({pread_iolist, Pos}, _From, File) ->
-    {LenIolist, NextPos} = read_raw_iolist_int(File, Pos, 4),
-    case iolist_to_binary(LenIolist) of
-    <<1:1/integer,Len:31/integer>> -> % an MD5-prefixed term
-        {Md5AndIoList, _} = read_raw_iolist_int(File, NextPos, Len+16),
-        {Md5, IoList} = extract_md5(Md5AndIoList),
-        case couch_util:md5(IoList) of
-        Md5 ->
-            {reply, {ok, IoList}, File};
-        _ ->
-            {stop, file_corruption, {error,file_corruption}, File}
-        end;
-    <<0:1/integer,Len:31/integer>> ->
-        {Iolist, _} = read_raw_iolist_int(File, NextPos, Len),
-        {reply, {ok, Iolist}, File}
-    end;
 handle_call({pread, Pos, Bytes}, _From, #file{fd=Fd,tail_append_begin=TailAppendBegin}=File) ->
     {ok, Bin} = file:pread(Fd, Pos, Bytes),
     {reply, {ok, Bin, Pos >= TailAppendBegin}, File};
-handle_call(bytes, _From, #file{eof=Length}=File) ->
-    {reply, {ok, Length}, File};
+handle_call(bytes, _From, #file{fd = Fd} = File) ->
+    {reply, file:position(Fd, eof), File};
 handle_call(sync, _From, #file{fd=Fd}=File) ->
     {reply, file:sync(Fd), File};
 handle_call({truncate, Pos}, _From, #file{fd=Fd}=File) ->
@@ -469,10 +490,56 @@ handle_cast(close, Fd) ->
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
+
+handle_info({pread_iolist, Pos, From}, File) ->
+    {LenIoListLocs, ReplyToList} = collect_pread_iolist_calls(
+        [{Pos, 4}], [From], ?MAX_READ_BATCH_SIZE),
+    LenIoLists = read_raw_iolists_int(File, LenIoListLocs),
+    {IoListLocs, IoListTypes} = lists:foldr(
+        fun({ListLen, NextPos}, {Locs, Types}) ->
+            case iolist_to_binary(ListLen) of
+            <<1:1/integer, Len:31/integer>> -> % an MD5-prefixed term
+                {[{NextPos, Len + 16} | Locs], [md5 | Types]};
+            <<0:1/integer, Len:31/integer>> ->
+                {[{NextPos, Len} | Locs], [simple | Types]}
+            end
+        end,
+        {[], []},
+        LenIoLists),
+    IoLists = read_raw_iolists_int(File, IoListLocs),
+    lists:foldl(
+        fun({{Md5AndIoList, _}, md5, ReplyTo}, Acc) ->
+                {Md5, IoList} = extract_md5(Md5AndIoList),
+                case couch_util:md5(IoList) of
+                Md5 ->
+                    ReplyTo ! {self(), {ok, IoList}},
+                    Acc;
+                _ ->
+                    ReplyTo ! {self(), {error, file_corruption}},
+                    {stop, file_corruption, File}
+                end;
+            ({{IoList, _}, simple, ReplyTo}, Acc) ->
+                ReplyTo ! {self(), {ok, IoList}},
+                Acc
+        end,
+        {noreply, File},
+        lists:zip3(IoLists, IoListTypes, ReplyToList));
+
 handle_info({'EXIT', _, normal}, Fd) ->
     {noreply, Fd};
 handle_info({'EXIT', _, Reason}, Fd) ->
     {stop, Reason, Fd}.
+
+
+collect_pread_iolist_calls(LocAcc, PidAcc, Max) when length(LocAcc) >= Max ->
+    {lists:reverse(LocAcc), lists:reverse(PidAcc)};
+collect_pread_iolist_calls(LocAcc, PidAcc, Max) ->
+    receive
+    {pread_iolist, Pos, From} ->
+        collect_pread_iolist_calls([{Pos, 4} | LocAcc], [From | PidAcc], Max)
+    after 0 ->
+        {lists:reverse(LocAcc), lists:reverse(PidAcc)}
+    end.
 
 
 find_header(_Fd, -1) ->
@@ -496,21 +563,32 @@ load_header(Fd, Block) ->
     Md5Sig = couch_util:md5(HeaderBin),
     {ok, HeaderBin}.
 
--spec read_raw_iolist_int(#file{}, Pos::non_neg_integer(), Len::non_neg_integer()) ->
-    {Data::iolist(), CurPos::non_neg_integer()}.
-read_raw_iolist_int(Fd, {Pos, _Size}, Len) -> % 0110 UPGRADE CODE
-    read_raw_iolist_int(Fd, Pos, Len);
-read_raw_iolist_int(#file{fd=Fd, tail_append_begin=TAB}, Pos, Len) ->
-    BlockOffset = Pos rem ?SIZE_BLOCK,
-    TotalBytes = calculate_total_read_len(BlockOffset, Len),
-    {ok, <<RawBin:TotalBytes/binary>>} = file:pread(Fd, Pos, TotalBytes),
-    if Pos >= TAB ->
-        {remove_block_prefixes(BlockOffset, RawBin), Pos + TotalBytes};
-    true ->
-        % 09 UPGRADE CODE
-        <<ReturnBin:Len/binary, _/binary>> = RawBin,
-        {[ReturnBin], Pos + Len}
-    end.
+read_raw_iolists_int(#file{fd=Fd, tail_append_begin=TAB}, PosLens) ->
+    {Locations, Offsets} = lists:foldr(
+        fun({Pos0, Len}, {Locs, Offs}) ->
+            Pos = case Pos0 of
+            {Pos1, _Size} ->
+                % 0110 UPGRADE CODE
+                Pos1;
+            _ ->
+                Pos0
+            end,
+            BlockOffset = Pos rem ?SIZE_BLOCK,
+            Loc = {Pos, calculate_total_read_len(BlockOffset, Len)},
+            {[Loc | Locs], [BlockOffset | Offs]}
+        end,
+        {[], []},
+        PosLens),
+    {ok, DataL} = file:pread(Fd, Locations),
+    lists:map(
+        fun({RawBin, {Pos, TotalBytes}, BlockOffset}) when Pos >= TAB ->
+                {remove_block_prefixes(BlockOffset, RawBin), Pos + TotalBytes};
+            ({RawBin, {Pos, Len}, _}) ->
+                % 09 UPGRADE CODE
+                <<ReturnBin:Len/binary, _/binary>> = RawBin,
+                {[ReturnBin], Pos + Len}
+        end,
+        lists:zip3(DataL, Locations, Offsets)).
 
 -spec extract_md5(iolist()) -> {binary(), iolist()}.
 extract_md5(FullIoList) ->
