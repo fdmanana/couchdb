@@ -499,7 +499,7 @@ handle_cast(close, Fd) ->
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
--define(MAX_READ_BATCH_SIZE, 50).
+-define(MAX_READ_BATCH_SIZE, 20).
 
 handle_info({pread_iolist, Pos, From}, File) ->
     {LenIoListLocs, ReplyToList} = collect_pread_iolist_calls(
