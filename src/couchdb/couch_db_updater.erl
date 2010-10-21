@@ -703,14 +703,14 @@ commit_data(Db, _) ->
         Db#db{waiting_delayed_commit=nil};
     Header ->
         case lists:member(before_header, FsyncOptions) of
-        true -> ok = couch_file:sync(Filepath);
+        true -> ok = couch_file:sync(Fd);
         _    -> ok
         end,
 
         ok = couch_file:write_header(Fd, Header),
 
         case lists:member(after_header, FsyncOptions) of
-        true -> ok = couch_file:sync(Filepath);
+        true -> ok = couch_file:sync(Fd);
         _    -> ok
         end,
 
