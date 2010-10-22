@@ -29,6 +29,7 @@
 -export([append_term_md5/2,append_binary_md5/2]).
 -export([init/1, terminate/2, handle_call/3, handle_cast/2, code_change/3, handle_info/2]).
 -export([delete/2,delete/3,init_delete_dir/1]).
+-export([append_term_list/2, append_binary_list/2]).
 
 %%----------------------------------------------------------------------
 %% Args:   Valid Options are [create] and [create,overwrite].
@@ -70,6 +71,9 @@ open(Filepath, Options) ->
 
 append_term(Fd, Term) ->
     append_binary(Fd, term_to_binary(Term)).
+
+append_term_list(Fd, TermList) ->
+    append_binary_list(Fd, lists:map(fun erlang:term_to_binary/1, TermList)).
     
 append_term_md5(Fd, Term) ->
     append_binary_md5(Fd, term_to_binary(Term)).
@@ -87,6 +91,15 @@ append_binary(Fd, Bin) ->
     Size = iolist_size(Bin),
     gen_server:call(Fd, {append_bin,
             [<<0:1/integer,Size:31/integer>>, Bin]}, infinity).
+
+append_binary_list(Fd, BinList) ->
+    BinList2 = lists:map(
+        fun(Bin) ->
+            Size = iolist_size(Bin),
+            [<<0:1/integer, Size:31/integer>>, Bin]
+        end,
+        BinList),
+    gen_server:call(Fd, {append_bin_list, BinList2}, infinity).
     
 append_binary_md5(Fd, Bin) ->
     Size = iolist_size(Bin),
@@ -318,6 +331,20 @@ handle_call({append_bin, Bin}, _From, #file{fd=Fd, eof=Pos}=File) ->
     case file:write(Fd, Blocks) of
     ok ->
         {reply, {ok, Pos}, File#file{eof=Pos+iolist_size(Blocks)}};
+    Error ->
+        {reply, Error, File}
+    end;
+handle_call({append_bin_list, BinList}, _From, #file{fd=Fd, eof=Pos}=File) ->
+    {BlockList, PosList, NewEof} = lists:foldl(
+        fun(Bin, {BlockAcc, PosAcc, Eof}) ->
+            Blocks = make_blocks(Eof rem ?SIZE_BLOCK, Bin),
+            {[Blocks | BlockAcc], [Eof | PosAcc], Eof + iolist_size(Blocks)}
+        end,
+        {[], [], Pos},
+        BinList),
+    case file:write(Fd, lists:reverse(BlockList)) of
+    ok ->
+        {reply, {ok, lists:reverse(PosList)}, File#file{eof = NewEof}};
     Error ->
         {reply, Error, File}
     end;

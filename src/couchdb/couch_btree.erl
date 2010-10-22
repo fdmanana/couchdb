@@ -334,16 +334,22 @@ write_node(Bt, NodeType, NodeList) ->
     % split up nodes into smaller sizes
     NodeListList = chunkify(NodeList),
     % now write out each chunk and return the KeyPointer pairs for those nodes
-    ResultList = [
-        begin
-            {ok, Pointer} = couch_file:append_term(Bt#btree.fd, {NodeType, ANodeList}),
+    {ResultList, NodeWriteList} = lists:foldl(
+        fun(ANodeList, {Result, WriteList}) ->
             {LastKey, _} = lists:last(ANodeList),
-            {LastKey, {Pointer, reduce_node(Bt, NodeType, ANodeList)}}
-        end
-    ||
-        ANodeList <- NodeListList
-    ],
-    {ok, ResultList, Bt}.
+            Node = {LastKey, {pointer_stub, reduce_node(Bt, NodeType, ANodeList)}},
+            {[Node | Result], [{NodeType, ANodeList} | WriteList]}
+        end,
+        {[], []},
+        NodeListList),
+    {ok, PointerList} = couch_file:append_term_list(
+        Bt#btree.fd, lists:reverse(NodeWriteList)),
+    ResultList2 = lists:map(
+        fun({Pointer, {LastKey, {pointer_stub, ReduceVal}}}) ->
+            {LastKey, {Pointer, ReduceVal}}
+        end,
+        lists:zip(PointerList, lists:reverse(ResultList))),
+    {ok, ResultList2, Bt}.
 
 modify_kpnode(Bt, {}, _LowerBound, Actions, [], QueryOutput) ->
     modify_node(Bt, nil, Actions, QueryOutput);
