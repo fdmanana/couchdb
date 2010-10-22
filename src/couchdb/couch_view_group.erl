@@ -205,6 +205,7 @@ handle_cast({compact_done, #group{current_seq=NewSeq} = NewGroup},
     unlink(CompactorPid),
     receive {'EXIT', CompactorPid, normal} -> ok after 0 -> ok end,
     unlink(OldFd),
+    term_cache_trees:stop(Group#group.btree_cache),
     couch_ref_counter:drop(RefCounter),
     {ok, NewRefCounter} = couch_ref_counter:start([NewGroup#group.fd]),
     case Group#group.db of
