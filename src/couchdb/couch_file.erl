@@ -145,11 +145,7 @@ pread_binary(Fd, Pos) ->
 
 
 pread_iolist(#file_group{reader_fd = Fd}, Pos) ->
-    Fd ! {pread_iolist, Pos, self()},
-    receive
-    {Fd, Result} ->
-        Result
-    end.
+    gen_server:call(Fd, {pread_iolist, Pos}, infinity).
 
 %%----------------------------------------------------------------------
 %% Purpose: The length of a file, in bytes.
@@ -319,6 +315,22 @@ maybe_track_open_os_files(FileOptions) ->
 terminate(_Reason, #file{fd = Fd}) ->
     ok = file:close(Fd).
 
+handle_call({pread_iolist, Pos}, _From, File) ->
+    {LenIolist, NextPos} = read_raw_iolist_int(File, Pos, 4),
+    case iolist_to_binary(LenIolist) of
+    <<1:1/integer,Len:31/integer>> -> % an MD5-prefixed term
+        {Md5AndIoList, _} = read_raw_iolist_int(File, NextPos, Len+16),
+        {Md5, IoList} = extract_md5(Md5AndIoList),
+        case couch_util:md5(IoList) of
+        Md5 ->
+            {reply, {ok, IoList}, File};
+        _ ->
+            {stop, file_corruption, {error,file_corruption}, File}
+        end;
+    <<0:1/integer,Len:31/integer>> ->
+        {Iolist, _} = read_raw_iolist_int(File, NextPos, Len),
+        {reply, {ok, Iolist}, File}
+    end;
 handle_call({pread, Pos, Bytes}, _From, #file{fd=Fd,tail_append_begin=TailAppendBegin}=File) ->
     {ok, Bin} = file:pread(Fd, Pos, Bytes),
     {reply, {ok, Bin, Pos >= TailAppendBegin}, File};
@@ -491,55 +503,10 @@ code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
 
-handle_info({pread_iolist, Pos, From}, File) ->
-    {LenIoListLocs, ReplyToList} = collect_pread_iolist_calls(
-        [{Pos, 4}], [From], ?MAX_READ_BATCH_SIZE),
-    LenIoLists = read_raw_iolists_int(File, LenIoListLocs),
-    {IoListLocs, IoListTypes} = lists:foldr(
-        fun({ListLen, NextPos}, {Locs, Types}) ->
-            case iolist_to_binary(ListLen) of
-            <<1:1/integer, Len:31/integer>> -> % an MD5-prefixed term
-                {[{NextPos, Len + 16} | Locs], [md5 | Types]};
-            <<0:1/integer, Len:31/integer>> ->
-                {[{NextPos, Len} | Locs], [simple | Types]}
-            end
-        end,
-        {[], []},
-        LenIoLists),
-    IoLists = read_raw_iolists_int(File, IoListLocs),
-    lists:foldl(
-        fun({{Md5AndIoList, _}, md5, ReplyTo}, Acc) ->
-                {Md5, IoList} = extract_md5(Md5AndIoList),
-                case couch_util:md5(IoList) of
-                Md5 ->
-                    ReplyTo ! {self(), {ok, IoList}},
-                    Acc;
-                _ ->
-                    ReplyTo ! {self(), {error, file_corruption}},
-                    {stop, file_corruption, File}
-                end;
-            ({{IoList, _}, simple, ReplyTo}, Acc) ->
-                ReplyTo ! {self(), {ok, IoList}},
-                Acc
-        end,
-        {noreply, File},
-        lists:zip3(IoLists, IoListTypes, ReplyToList));
-
 handle_info({'EXIT', _, normal}, Fd) ->
     {noreply, Fd};
 handle_info({'EXIT', _, Reason}, Fd) ->
     {stop, Reason, Fd}.
-
-
-collect_pread_iolist_calls(LocAcc, PidAcc, Max) when length(LocAcc) >= Max ->
-    {lists:reverse(LocAcc), lists:reverse(PidAcc)};
-collect_pread_iolist_calls(LocAcc, PidAcc, Max) ->
-    receive
-    {pread_iolist, Pos, From} ->
-        collect_pread_iolist_calls([{Pos, 4} | LocAcc], [From | PidAcc], Max)
-    after 0 ->
-        {lists:reverse(LocAcc), lists:reverse(PidAcc)}
-    end.
 
 
 find_header(_Fd, -1) ->
@@ -563,32 +530,21 @@ load_header(Fd, Block) ->
     Md5Sig = couch_util:md5(HeaderBin),
     {ok, HeaderBin}.
 
-read_raw_iolists_int(#file{fd=Fd, tail_append_begin=TAB}, PosLens) ->
-    {Locations, Offsets} = lists:foldr(
-        fun({Pos0, Len}, {Locs, Offs}) ->
-            Pos = case Pos0 of
-            {Pos1, _Size} ->
-                % 0110 UPGRADE CODE
-                Pos1;
-            _ ->
-                Pos0
-            end,
-            BlockOffset = Pos rem ?SIZE_BLOCK,
-            Loc = {Pos, calculate_total_read_len(BlockOffset, Len)},
-            {[Loc | Locs], [BlockOffset | Offs]}
-        end,
-        {[], []},
-        PosLens),
-    {ok, DataL} = file:pread(Fd, Locations),
-    lists:map(
-        fun({RawBin, {Pos, TotalBytes}, BlockOffset}) when Pos >= TAB ->
-                {remove_block_prefixes(BlockOffset, RawBin), Pos + TotalBytes};
-            ({RawBin, {Pos, Len}, _}) ->
-                % 09 UPGRADE CODE
-                <<ReturnBin:Len/binary, _/binary>> = RawBin,
-                {[ReturnBin], Pos + Len}
-        end,
-        lists:zip3(DataL, Locations, Offsets)).
+-spec read_raw_iolist_int(#file{}, Pos::non_neg_integer(), Len::non_neg_integer()) ->
+    {Data::iolist(), CurPos::non_neg_integer()}.
+read_raw_iolist_int(Fd, {Pos, _Size}, Len) -> % 0110 UPGRADE CODE
+    read_raw_iolist_int(Fd, Pos, Len);
+read_raw_iolist_int(#file{fd=Fd, tail_append_begin=TAB}, Pos, Len) ->
+    BlockOffset = Pos rem ?SIZE_BLOCK,
+    TotalBytes = calculate_total_read_len(BlockOffset, Len),
+    {ok, <<RawBin:TotalBytes/binary>>} = file:pread(Fd, Pos, TotalBytes),
+    if Pos >= TAB ->
+        {remove_block_prefixes(BlockOffset, RawBin), Pos + TotalBytes};
+    true ->
+        % 09 UPGRADE CODE
+        <<ReturnBin:Len/binary, _/binary>> = RawBin,
+        {[ReturnBin], Pos + Len}
+    end.
 
 -spec extract_md5(iolist()) -> {binary(), iolist()}.
 extract_md5(FullIoList) ->
