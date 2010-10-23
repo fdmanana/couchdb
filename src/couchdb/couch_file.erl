@@ -230,9 +230,9 @@ init({Filepath, Options, ReturnPid, Ref}) ->
     case lists:member(create, Options) of
     true ->
         filelib:ensure_dir(Filepath),
-        case file:open(Filepath, [read, append, raw, binary]) of
+        case fd:open(Filepath, [read, write, append, create, raw, binary]) of
         {ok, Fd} ->
-            {ok, Length} = file:position(Fd, eof),
+            {ok, Length} = fd:position(Fd, eof),
             case Length > 0 of
             true ->
                 % this means the file already exists and has data.
@@ -240,13 +240,12 @@ init({Filepath, Options, ReturnPid, Ref}) ->
                 % files here.
                 case lists:member(overwrite, Options) of
                 true ->
-                    {ok, 0} = file:position(Fd, 0),
-                    ok = file:truncate(Fd),
-                    ok = file:sync(Fd),
+                    ok = fd:truncate(Fd, 0),
+                    ok = fd:sync(Fd),
                     maybe_track_open_os_files(Options),
                     {ok, #file{fd=Fd}};
                 false ->
-                    ok = file:close(Fd),
+                    ok = fd:close(Fd),
                     init_status_error(ReturnPid, Ref, file_exists)
                 end;
             false ->
@@ -258,12 +257,12 @@ init({Filepath, Options, ReturnPid, Ref}) ->
         end;
     false ->
         % open in read mode first, so we don't create the file if it doesn't exist.
-        case file:open(Filepath, [read, raw]) of
+        case fd:open(Filepath, [read, raw]) of
         {ok, Fd_Read} ->
-            {ok, Fd} = file:open(Filepath, [read, append, raw, binary]),
-            ok = file:close(Fd_Read),
+            {ok, Fd} = fd:open(Filepath, [read, write, append, raw, binary]),
+            ok = fd:close(Fd_Read),
             maybe_track_open_os_files(Options),
-            {ok, Length} = file:position(Fd, eof),
+            {ok, Length} = fd:position(Fd, eof),
             {ok, #file{fd=Fd, eof=Length}};
         Error ->
             init_status_error(ReturnPid, Ref, Error)
@@ -279,7 +278,7 @@ maybe_track_open_os_files(FileOptions) ->
     end.
 
 terminate(_Reason, #file{fd = Fd}) ->
-    ok = file:close(Fd).
+    ok = fd:close(Fd).
 
 
 handle_call({pread_iolist, Pos}, _From, File) ->
@@ -299,15 +298,14 @@ handle_call({pread_iolist, Pos}, _From, File) ->
         {reply, {ok, Iolist}, File}
     end;
 handle_call({pread, Pos, Bytes}, _From, #file{fd=Fd,tail_append_begin=TailAppendBegin}=File) ->
-    {ok, Bin} = file:pread(Fd, Pos, Bytes),
+    {ok, Bin} = fd:pread(Fd, Pos, Bytes),
     {reply, {ok, Bin, Pos >= TailAppendBegin}, File};
 handle_call(bytes, _From, #file{eof=Length}=File) ->
     {reply, {ok, Length}, File};
 handle_call(sync, _From, #file{fd=Fd}=File) ->
-    {reply, file:sync(Fd), File};
+    {reply, fd:sync(Fd), File};
 handle_call({truncate, Pos}, _From, #file{fd=Fd}=File) ->
-    {ok, Pos} = file:position(Fd, Pos),
-    case file:truncate(Fd) of
+    case fd:truncate(Fd, Pos) of
     ok ->
         {reply, ok, File#file{eof=Pos}};
     Error ->
@@ -315,7 +313,7 @@ handle_call({truncate, Pos}, _From, #file{fd=Fd}=File) ->
     end;
 handle_call({append_bin, Bin}, _From, #file{fd=Fd, eof=Pos}=File) ->
     Blocks = make_blocks(Pos rem ?SIZE_BLOCK, Bin),
-    case file:write(Fd, Blocks) of
+    case fd:write(Fd, Blocks) of
     ok ->
         {reply, {ok, Pos}, File#file{eof=Pos+iolist_size(Blocks)}};
     Error ->
@@ -330,7 +328,7 @@ handle_call({write_header, Bin}, _From, #file{fd=Fd, eof=Pos}=File) ->
         Padding = <<0:(8*(?SIZE_BLOCK-BlockOffset))>>
     end,
     FinalBin = [Padding, <<1, BinSize:32/integer>> | make_blocks(5, [Bin])],
-    case file:write(Fd, FinalBin) of
+    case fd:write(Fd, FinalBin) of
     ok ->
         {reply, ok, File#file{eof=Pos+iolist_size(FinalBin)}};
     Error ->
@@ -367,7 +365,7 @@ handle_call(find_header, _From, #file{fd=Fd, eof=Pos}=File) ->
 
 % 09 UPGRADE CODE
 read_old_header(Fd, Prefix) ->
-    {ok, Bin} = file:pread(Fd, 0, 2*(?HEADER_SIZE)),
+    {ok, Bin} = fd:pread(Fd, 0, 2*(?HEADER_SIZE)),
     <<Bin1:(?HEADER_SIZE)/binary, Bin2:(?HEADER_SIZE)/binary>> = Bin,
     Result =
     % read the first header
@@ -450,7 +448,7 @@ write_old_header(Fd, Prefix, Data) ->
     false ->
         {TermBin, FilledSize}
     end,
-    ok = file:sync(Fd),
+    ok = fd:sync(Fd),
     % pad out the header with zeros, then take the md5 hash
     PadZeros = <<0:(8*(?HEADER_SIZE - FilledSize2))>>,
     Sig = couch_util:md5([TermBin2, PadZeros]),
@@ -458,8 +456,8 @@ write_old_header(Fd, Prefix, Data) ->
     WriteBin = <<Prefix/binary, TermBin2/binary, PadZeros/binary, Sig/binary>>,
     ?HEADER_SIZE = size(WriteBin), % sanity check
     DblWriteBin = [WriteBin, WriteBin],
-    ok = file:pwrite(Fd, 0, DblWriteBin),
-    ok = file:sync(Fd).
+    ok = fd:pwrite(Fd, 0, DblWriteBin),
+    ok = fd:sync(Fd).
 
 
 handle_cast(close, Fd) ->
@@ -486,11 +484,11 @@ find_header(Fd, Block) ->
     end.
 
 load_header(Fd, Block) ->
-    {ok, <<1>>} = file:pread(Fd, Block*?SIZE_BLOCK, 1),
-    {ok, <<HeaderLen:32/integer>>} = file:pread(Fd, (Block*?SIZE_BLOCK) + 1, 4),
+    {ok, <<1>>} = fd:pread(Fd, Block*?SIZE_BLOCK, 1),
+    {ok, <<HeaderLen:32/integer>>} = fd:pread(Fd, (Block*?SIZE_BLOCK) + 1, 4),
     TotalBytes = calculate_total_read_len(1, HeaderLen),
     {ok, <<RawBin:TotalBytes/binary>>} =
-            file:pread(Fd, (Block*?SIZE_BLOCK) + 5, TotalBytes),
+            fd:pread(Fd, (Block*?SIZE_BLOCK) + 5, TotalBytes),
     <<Md5Sig:16/binary, HeaderBin/binary>> =
         iolist_to_binary(remove_block_prefixes(1, RawBin)),
     Md5Sig = couch_util:md5(HeaderBin),
@@ -503,7 +501,7 @@ read_raw_iolist_int(Fd, {Pos, _Size}, Len) -> % 0110 UPGRADE CODE
 read_raw_iolist_int(#file{fd=Fd, tail_append_begin=TAB}, Pos, Len) ->
     BlockOffset = Pos rem ?SIZE_BLOCK,
     TotalBytes = calculate_total_read_len(BlockOffset, Len),
-    {ok, <<RawBin:TotalBytes/binary>>} = file:pread(Fd, Pos, TotalBytes),
+    {ok, <<RawBin:TotalBytes/binary>>} = fd:pread(Fd, Pos, TotalBytes),
     if Pos >= TAB ->
         {remove_block_prefixes(BlockOffset, RawBin), Pos + TotalBytes};
     true ->

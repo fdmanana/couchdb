@@ -66,4 +66,5 @@ EXTRA_DIST = \
     130-attachments-md5.t \
     140-attachment-comp.t \
     150-invalid-view-seq.t \
-    160-vhosts.t
+    160-vhosts.t \
+    180-fd.t

@@ -13,8 +13,12 @@
 % License for the specific language governing permissions and limitations under
 % the License.
 
+default_config() ->
+    test_util:build_file("etc/couchdb/default_dev.ini").
+
 main(_) ->
     test_util:init_code_path(),
+    couch_config:start_link([default_config()]),
     etap:plan(13),
     case (catch test()) of
         ok ->

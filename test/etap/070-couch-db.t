@@ -29,10 +29,12 @@ main(_) ->
 test() ->
 
     couch_server_sup:start_link(
-        ["etc/couchdb/default_dev.ini", "etc/couchdb/local_dev.ini"]
+        [test_util:build_file("etc/couchdb/default_dev.ini"), 
+         test_util:build_file("etc/couchdb/local_dev.ini")]
     ),
 
     couch_db:create(<<"etap-test-db">>, []),
+
     {ok, AllDbs} = couch_server:all_databases(),
     etap:ok(lists:member(<<"etap-test-db">>, AllDbs), "Database was created."),
 

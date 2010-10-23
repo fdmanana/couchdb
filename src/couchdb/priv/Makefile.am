@@ -27,7 +27,8 @@ else
 ICU_LOCAL_LIBS=-licuuc -licudata -licui18n
 endif
 
-couchprivlib_LTLIBRARIES = couch_icu_driver.la
+couchprivlib_LTLIBRARIES = couch_icu_driver.la fd.la 
+
 couch_icu_driver_la_SOURCES = icu_driver/couch_icu_driver.c
 couch_icu_driver_la_LDFLAGS = -module -avoid-version $(ICU_LOCAL_FLAGS)
 couch_icu_driver_la_CFLAGS = $(ICU_LOCAL_FLAGS)
@@ -49,6 +50,15 @@ couchjs_SOURCES = $(COUCHJS_SRCS)
 couchjs_LDFLAGS = $(CURL_LDFLAGS)
 couchjs_CFLAGS = -D_BSD_SOURCE $(CURL_CFLAGS)
 couchjs_LDADD = $(CURL_LDFLAGS) @JSLIB@
+
+fd_la_SOURCES = fd/fd.c
+fd_la_LDFLAGS = -module -avoid-version $(COUCH_FD_LOCAL_FLAGS)
+fd_la_CFLAGS = $(COUCH_FD_LOCAL_FLAGS)
+fd_la_LIBADD = $(COUCH_FD_LOCAL_LIBS)
+
+if WINDOWS
+fd_la_LDFLAGS += -no-undefined
+endif
 
 couchpriv_DATA = stat_descriptions.cfg
 couchpriv_PROGRAMS = couchspawnkillable
