@@ -16,7 +16,6 @@
 -include("couch_db.hrl").
 
 -define(SIZE_BLOCK, 4096).
--define(MAX_READ_BATCH_SIZE, 20).
 
 -record(file, {
     fd,
