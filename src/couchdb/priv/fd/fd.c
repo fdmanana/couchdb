@@ -97,7 +97,11 @@ static ERL_NIF_TERM sync_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]
   if (!enif_get_int(env, argv[0], &fd))
     return enif_make_badarg(env);
 
+  #ifdef __APPLE__
   fcntl(fd, F_FULLFSYNC);
+  #else
+  fsync(fd);
+  #endif
 
   return enif_make_atom(env, "ok");
 }
