@@ -23,12 +23,18 @@
     eof = 0
     }).
 
+-record(file_group, {
+    writer_fd,
+    reader_fd
+}).
+
 -export([open/1, open/2, close/1, bytes/1, sync/1, append_binary/2,old_pread/3]).
 -export([append_term/2, pread_term/2, pread_iolist/2, write_header/2]).
 -export([pread_binary/2, read_header/1, truncate/2, upgrade_old_header/2]).
 -export([append_term_md5/2,append_binary_md5/2]).
 -export([init/1, terminate/2, handle_call/3, handle_cast/2, code_change/3, handle_info/2]).
 -export([delete/2,delete/3,init_delete_dir/1]).
+-export([start_ref_counter/1, unlink/1]).
 
 %%----------------------------------------------------------------------
 %% Args:   Valid Options are [create] and [create,overwrite].
@@ -44,7 +50,7 @@ open(Filepath, Options) ->
     case gen_server:start_link(couch_file,
             {Filepath, Options, self(), Ref = make_ref()}, []) of
     {ok, Fd} ->
-        {ok, Fd};
+        {ok, create_group(Filepath, Fd)};
     ignore ->
         % get the error
         receive
@@ -60,6 +66,24 @@ open(Filepath, Options) ->
     end.
 
 
+create_group(Filepath, WriterFd) ->
+    {ok, ReaderFd} = gen_server:start_link(
+        couch_file, {Filepath, [read_only], nil, nil}, []),
+    #file_group{writer_fd = WriterFd, reader_fd = ReaderFd}.
+
+
+%% Purpose: unlinks the caller from all the PIDs associated with the file.
+unlink(#file_group{writer_fd = WriterFd, reader_fd = ReaderFd}) ->
+    erlang:unlink(WriterFd),
+    erlang:unlink(ReaderFd).
+
+
+%% Purpose: create a reference counter associated to the given file.
+start_ref_counter(#file_group{writer_fd = WriterFd, reader_fd = ReaderFd}) ->
+    {ok, Ref} = couch_ref_counter:start([WriterFd, ReaderFd]),
+    Ref.
+
+
 %%----------------------------------------------------------------------
 %% Purpose: To append an Erlang term to the end of the file.
 %% Args:    Erlang term to serialize and append to the file.
@@ -68,11 +92,11 @@ open(Filepath, Options) ->
 %%  or {error, Reason}.
 %%----------------------------------------------------------------------
 
-append_term(Fd, Term) ->
-    append_binary(Fd, term_to_binary(Term)).
+append_term(FileGroup, Term) ->
+    append_binary(FileGroup, term_to_binary(Term)).
     
-append_term_md5(Fd, Term) ->
-    append_binary_md5(Fd, term_to_binary(Term)).
+append_term_md5(FileGroup, Term) ->
+    append_binary_md5(FileGroup, term_to_binary(Term)).
 
 
 %%----------------------------------------------------------------------
@@ -83,12 +107,12 @@ append_term_md5(Fd, Term) ->
 %%  or {error, Reason}.
 %%----------------------------------------------------------------------
 
-append_binary(Fd, Bin) ->
+append_binary(#file_group{writer_fd = Fd}, Bin) ->
     Size = iolist_size(Bin),
     gen_server:call(Fd, {append_bin,
             [<<0:1/integer,Size:31/integer>>, Bin]}, infinity).
     
-append_binary_md5(Fd, Bin) ->
+append_binary_md5(#file_group{writer_fd = Fd}, Bin) ->
     Size = iolist_size(Bin),
     gen_server:call(Fd, {append_bin,
             [<<1:1/integer,Size:31/integer>>, couch_util:md5(Bin), Bin]}, infinity).
@@ -119,7 +143,7 @@ pread_binary(Fd, Pos) ->
     {ok, iolist_to_binary(L)}.
 
 
-pread_iolist(Fd, Pos) ->
+pread_iolist(#file_group{reader_fd = Fd}, Pos) ->
     gen_server:call(Fd, {pread_iolist, Pos}, infinity).
 
 %%----------------------------------------------------------------------
@@ -129,7 +153,7 @@ pread_iolist(Fd, Pos) ->
 %%----------------------------------------------------------------------
 
 % length in bytes
-bytes(Fd) ->
+bytes(#file_group{reader_fd = Fd}) ->
     gen_server:call(Fd, bytes, infinity).
 
 %%----------------------------------------------------------------------
@@ -138,7 +162,7 @@ bytes(Fd) ->
 %%  or {error, Reason}.
 %%----------------------------------------------------------------------
 
-truncate(Fd, Pos) ->
+truncate(#file_group{writer_fd = Fd}, Pos) ->
     gen_server:call(Fd, {truncate, Pos}, infinity).
 
 %%----------------------------------------------------------------------
@@ -150,15 +174,16 @@ truncate(Fd, Pos) ->
 sync(Filepath) when is_list(Filepath) ->
     {ok, Fd} = file:open(Filepath, [append, raw]),
     try file:sync(Fd) after file:close(Fd) end;
-sync(Fd) ->
+sync(#file_group{writer_fd = Fd}) ->
     gen_server:call(Fd, sync, infinity).
 
 %%----------------------------------------------------------------------
 %% Purpose: Close the file.
 %% Returns: ok
 %%----------------------------------------------------------------------
-close(Fd) ->
-    couch_util:shutdown_sync(Fd).
+close(#file_group{writer_fd = WriterFd, reader_fd = ReaderFd}) ->
+    couch_util:shutdown_sync(WriterFd),
+    couch_util:shutdown_sync(ReaderFd).
 
 
 delete(RootDir, Filepath) ->
@@ -192,16 +217,16 @@ init_delete_dir(RootDir) ->
 
 
 % 09 UPGRADE CODE
-old_pread(Fd, Pos, Len) ->
+old_pread(#file_group{writer_fd = Fd}, Pos, Len) ->
     {ok, <<RawBin:Len/binary>>, false} = gen_server:call(Fd, {pread, Pos, Len}, infinity),
     {ok, RawBin}.
 
 % 09 UPGRADE CODE
-upgrade_old_header(Fd, Sig) ->
+upgrade_old_header(#file_group{writer_fd = Fd}, Sig) ->
     gen_server:call(Fd, {upgrade_old_header, Sig}, infinity).
 
 
-read_header(Fd) ->
+read_header(#file_group{writer_fd = Fd}) ->
     case gen_server:call(Fd, find_header, infinity) of
     {ok, Bin} ->
         {ok, binary_to_term(Bin)};
@@ -209,16 +234,15 @@ read_header(Fd) ->
         Else
     end.
 
-write_header(Fd, Data) ->
+write_header(#file_group{writer_fd = Fd}, Data) ->
     Bin = term_to_binary(Data),
     Md5 = couch_util:md5(Bin),
     % now we assemble the final header binary and write to disk
     FinalBin = <<Md5/binary, Bin/binary>>,
     gen_server:call(Fd, {write_header, FinalBin}, infinity).
 
-
-
-
+init_status_error(nil, _Ref, _Error) ->
+    ignore;
 init_status_error(ReturnPid, Ref, Error) ->
     ReturnPid ! {Ref, self(), Error},
     ignore.
@@ -227,10 +251,11 @@ init_status_error(ReturnPid, Ref, Error) ->
 
 init({Filepath, Options, ReturnPid, Ref}) ->
     process_flag(trap_exit, true),
+    OpenOptions = file_open_options(Options),
     case lists:member(create, Options) of
     true ->
         filelib:ensure_dir(Filepath),
-        case fd:open(Filepath, [read, write, append, create, raw, binary]) of
+        case fd:open(Filepath, OpenOptions) of
         {ok, Fd} ->
             {ok, Length} = fd:position(Fd, eof),
             case Length > 0 of
@@ -259,7 +284,7 @@ init({Filepath, Options, ReturnPid, Ref}) ->
         % open in read mode first, so we don't create the file if it doesn't exist.
         case fd:open(Filepath, [read, raw]) of
         {ok, Fd_Read} ->
-            {ok, Fd} = fd:open(Filepath, [read, write, append, raw, binary]),
+            {ok, Fd} = fd:open(Filepath, OpenOptions),
             ok = fd:close(Fd_Read),
             maybe_track_open_os_files(Options),
             {ok, Length} = fd:position(Fd, eof),
@@ -269,17 +294,25 @@ init({Filepath, Options, ReturnPid, Ref}) ->
         end
     end.
 
-maybe_track_open_os_files(FileOptions) ->
-    case lists:member(sys_db, FileOptions) of
+file_open_options(Options) ->
+    case lists:member(read_only, Options) of
     true ->
-        ok;
+%        [read, write, append, create, raw, binary];
+        [read, raw, binary];
     false ->
-        couch_stats_collector:track_process_count({couchdb, open_os_files})
+        [read, write, append, create, raw, binary]
+    end.
+
+maybe_track_open_os_files(FileOptions) ->
+    case FileOptions -- [sys_db, read_only] of
+    FileOptions ->
+        couch_stats_collector:track_process_count({couchdb, open_os_files});
+    _ ->
+        ok
     end.
 
 terminate(_Reason, #file{fd = Fd}) ->
     ok = fd:close(Fd).
-
 
 handle_call({pread_iolist, Pos}, _From, File) ->
     {LenIolist, NextPos} = read_raw_iolist_int(File, Pos, 4),
@@ -300,8 +333,8 @@ handle_call({pread_iolist, Pos}, _From, File) ->
 handle_call({pread, Pos, Bytes}, _From, #file{fd=Fd,tail_append_begin=TailAppendBegin}=File) ->
     {ok, Bin} = fd:pread(Fd, Pos, Bytes),
     {reply, {ok, Bin, Pos >= TailAppendBegin}, File};
-handle_call(bytes, _From, #file{eof=Length}=File) ->
-    {reply, {ok, Length}, File};
+handle_call(bytes, _From, #file{fd = Fd} = File) ->
+    {reply, fd:position(Fd, eof), File};
 handle_call(sync, _From, #file{fd=Fd}=File) ->
     {reply, fd:sync(Fd), File};
 handle_call({truncate, Pos}, _From, #file{fd=Fd}=File) ->
@@ -466,6 +499,7 @@ handle_cast(close, Fd) ->
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
+
 
 handle_info({'EXIT', _, normal}, Fd) ->
     {noreply, Fd};

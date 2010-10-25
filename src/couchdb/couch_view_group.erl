@@ -89,7 +89,7 @@ init({InitArgs, ReturnPid, Ref}) ->
             Pid = spawn_link(
                 fun()-> couch_view_updater:update(Owner, Group) end
             ),
-            {ok, RefCounter} = couch_ref_counter:start([Fd]),
+            RefCounter = couch_file:start_ref_counter(Fd),
             {ok, #group_state{
                     db_name=couch_db:name(Db),
                     init_args=InitArgs,
@@ -204,9 +204,9 @@ handle_cast({compact_done, #group{current_seq=NewSeq} = NewGroup},
     %% cleanup old group
     unlink(CompactorPid),
     receive {'EXIT', CompactorPid, normal} -> ok after 0 -> ok end,
-    unlink(OldFd),
+    couch_file:unlink(OldFd),
     couch_ref_counter:drop(RefCounter),
-    {ok, NewRefCounter} = couch_ref_counter:start([NewGroup#group.fd]),
+    NewRefCounter = couch_file:start_ref_counter(NewGroup#group.fd),
     case Group#group.db of
         nil -> ok;
         Else -> couch_db:close(Else)

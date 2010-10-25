@@ -20,7 +20,7 @@ filename() -> test_util:build_file("test/etap/temp.010").
 main(_) ->
     test_util:init_code_path(),
     couch_config:start_link([default_config()]),
-    etap:plan(19),
+    etap:plan(18),
     case (catch test()) of
         ok ->
             etap:end_tests();
@@ -41,8 +41,6 @@ test() ->
     ),
 
     {ok, Fd} = couch_file:open(filename() ++ ".0", [create, overwrite]),
-    etap:ok(is_pid(Fd),
-        "Returned file descriptor is a Pid"),
 
     etap:is({ok, 0}, couch_file:bytes(Fd),
         "Newly created files have 0 bytes."),
