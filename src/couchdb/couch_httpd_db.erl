@@ -55,26 +55,15 @@ handle_request(#httpd{path_parts=[DbName|RestParts],method=Method,
         do_db_req(Req, Handler)
     end.
 
-handle_changes_req(#httpd{method='GET'}=Req, Db) ->
-    handle_changes_req1(Req, Db, nil);
-
 handle_changes_req(#httpd{method='POST'}=Req, Db) ->
     couch_httpd:validate_ctype(Req, "application/json"),
-    {Props} = couch_httpd:json_body_obj(Req),
-    case couch_util:get_value(<<"doc_ids">>, Props, nil) of
-    nil ->
-        handle_changes_req1(Req, Db, nil);
-    Docids when is_list(Docids) ->
-        handle_changes_req1(Req, Db, Docids);
-    _ ->
-        throw({bad_request, "`docids` member must be a array."}) 
-    end;
-
+    handle_changes_req1(Req, Db);
+handle_changes_req(#httpd{method='GET'}=Req, Db) ->
+    handle_changes_req1(Req, Db);
 handle_changes_req(#httpd{path_parts=[_,<<"_changes">>]}=Req, _Db) ->
     send_method_not_allowed(Req, "GET,HEAD,POST").
 
-
-handle_changes_req1(Req, Db, Docids) ->
+handle_changes_req1(Req, Db) ->
     MakeCallback = fun(Resp) ->
         fun({change, Change, _}, "continuous") ->
             send_chunk(Resp, [?JSON_ENCODE(Change) | "\n"]);
@@ -101,13 +90,8 @@ handle_changes_req1(Req, Db, Docids) ->
         end
     end,
     ChangesArgs = parse_changes_query(Req),
-    ChangesArgs1 = case Docids of
-        nil -> ChangesArgs;
-        _ -> ChangesArgs#changes_args{filter={docids, Docids}}
-    end,
-
-    ChangesFun = couch_changes:handle_changes(ChangesArgs1, Req, Db),
-    WrapperFun = case ChangesArgs1#changes_args.feed of
+    ChangesFun = couch_changes:handle_changes(ChangesArgs, Req, Db),
+    WrapperFun = case ChangesArgs#changes_args.feed of
     "normal" ->
         {ok, Info} = couch_db:get_db_info(Db),
         CurrentEtag = couch_httpd:make_etag(Info),
@@ -375,7 +359,8 @@ db_req(#httpd{path_parts=[_,<<"_purge">>]}=Req, _Db) ->
     send_method_not_allowed(Req, "POST");
 
 db_req(#httpd{method='GET',path_parts=[_,<<"_all_docs">>]}=Req, Db) ->
-    all_docs_view(Req, Db, nil);
+    Keys = couch_httpd:qs_json_value(Req, "keys", nil),
+    all_docs_view(Req, Db, Keys);
 
 db_req(#httpd{method='POST',path_parts=[_,<<"_all_docs">>]}=Req, Db) ->
     couch_httpd:validate_ctype(Req, "application/json"),
@@ -579,7 +564,7 @@ db_doc_req(#httpd{method='DELETE'}=Req, Db, DocId) ->
                     {[{<<"_rev">>, ?l2b(Rev)},{<<"_deleted">>,true}]}))
     end;
 
-db_doc_req(#httpd{method='GET'}=Req, Db, DocId) ->
+db_doc_req(#httpd{method = 'GET', mochi_req = MochiReq} = Req, Db, DocId) ->
     #doc_query_args{
         rev = Rev,
         open_revs = Revs,
@@ -598,11 +583,7 @@ db_doc_req(#httpd{method='GET'}=Req, Db, DocId) ->
         send_doc(Req, Doc, Options);
     _ ->
         {ok, Results} = couch_db:open_doc_revs(Db, DocId, Revs, Options),
-        AcceptedTypes = case couch_httpd:header_value(Req, "Accept") of
-            undefined       -> [];
-            AcceptHeader    -> string:tokens(AcceptHeader, ", ")
-        end,
-        case lists:member("multipart/mixed", AcceptedTypes) of
+        case MochiReq:accepts_content_type("multipart/mixed") of
         false ->
             {ok, Resp} = start_json_response(Req, 200),
             send_chunk(Resp, "["),
@@ -744,14 +725,11 @@ send_doc(Req, Doc, Options) ->
 
 send_doc_efficiently(Req, #doc{atts=[]}=Doc, Headers, Options) ->
         send_json(Req, 200, Headers, couch_doc:to_json_obj(Doc, Options));
-send_doc_efficiently(Req, #doc{atts=Atts}=Doc, Headers, Options) ->
+send_doc_efficiently(#httpd{mochi_req = MochiReq} = Req,
+    #doc{atts = Atts} = Doc, Headers, Options) ->
     case lists:member(attachments, Options) of
     true ->
-        AcceptedTypes = case couch_httpd:header_value(Req, "Accept") of
-            undefined       -> [];
-            AcceptHeader    -> string:tokens(AcceptHeader, ", ")
-        end,
-        case lists:member("multipart/related", AcceptedTypes) of
+        case MochiReq:accepts_content_type("multipart/related") of
         false ->
             send_json(Req, 200, Headers, couch_doc:to_json_obj(Doc, Options));
         true ->

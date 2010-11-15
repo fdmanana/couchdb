@@ -57,7 +57,8 @@ design_doc_view(Req, Db, DName, ViewName, Keys) ->
 
 handle_view_req(#httpd{method='GET',
         path_parts=[_, _, DName, _, ViewName]}=Req, Db, _DDoc) ->
-    design_doc_view(Req, Db, DName, ViewName, nil);
+    Keys = couch_httpd:qs_json_value(Req, "keys", nil),
+    design_doc_view(Req, Db, DName, ViewName, Keys);
 
 handle_view_req(#httpd{method='POST',
         path_parts=[_, _, DName, _, ViewName]}=Req, Db, _DDoc) ->
@@ -386,6 +387,8 @@ validate_view_query(group_level, Value, Args) ->
     end;
 validate_view_query(inclusive_end, Value, Args) ->
     Args#view_query_args{inclusive_end=Value};
+validate_view_query(reduce, false, Args) ->
+    Args;
 validate_view_query(reduce, _, Args) ->
     case Args#view_query_args.view_type of
     map ->
