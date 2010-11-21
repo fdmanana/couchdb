@@ -31,7 +31,7 @@
             throw({forbidden: 'doc.name is required'});
         }
 
-        if (!(newDoc.roles && (typeof newDoc.roles.length !== 'undefined'))) {
+        if (newDoc.roles && !isArray(newDoc.roles)) {
             throw({forbidden: 'doc.roles must be an array'});
         }
 
@@ -121,8 +121,7 @@
                     'non-empty string.');
             }
 
-            if ((typeof user_ctx.roles !== 'undefined') &&
-                    (typeof user_ctx.roles.length !== 'number')) {
+            if (user_ctx.roles && !isArray(user_ctx.roles)) {
                 reportError('The roles property of the user_ctx must be ' +
                     'an array of strings.');
             }
