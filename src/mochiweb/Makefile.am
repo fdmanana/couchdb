@@ -100,3 +100,6 @@ CLEANFILES = \
 %.beam: %.erl
 
 	$(ERLC) $(ERLC_FLAGS) $<
+
+mochijson2.beam: mochijson2.erl
+	$(ERLC) +native mochijson2.erl
