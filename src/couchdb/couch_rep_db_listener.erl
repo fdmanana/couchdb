@@ -53,7 +53,7 @@ init(_) ->
 
 
 handle_call(Msg, From, State) ->
-    ?LOG_ERROR("Replicator DB listener receive unexpected call ~p from ~p",
+    ?LOG_ERROR("Replicator DB listener received unexpected call ~p from ~p",
         [Msg, From]),
     {stop, {error, {unexpected_call, Msg}}, State}.
 
@@ -63,17 +63,20 @@ handle_cast(rep_db_changed, State) ->
         changes_feed_loop = Loop,
         changes_queue = Queue
     } = State,
-    exit(Loop, rep_db_changed),
+    unlink(Loop),
+    catch exit(Loop, rep_db_changed),
     couch_work_queue:queue(Queue, stop_all_replications),
     {ok, NewLoop} = changes_feed_loop(Queue),
     {noreply, State#state{changes_feed_loop = NewLoop}};
 
-handle_cast(rep_db_created, #state{changes_feed_loop = nil} = State) ->
+handle_cast(rep_db_created, #state{changes_feed_loop = Loop} = State) ->
+    unlink(Loop),
+    catch exit(Loop, rep_db_changed),
     {ok, NewLoop} = changes_feed_loop(State#state.changes_queue),
     {noreply, State#state{changes_feed_loop = NewLoop}};
 
 handle_cast(Msg, State) ->
-    ?LOG_ERROR("Replicator DB listener receive unexpected cast ~p", [Msg]),
+    ?LOG_ERROR("Replicator DB listener received unexpected cast ~p", [Msg]),
     {stop, {error, {unexpected_cast, Msg}}, State}.
 
 
@@ -85,9 +88,6 @@ handle_info({'EXIT', From, normal}, #state{changes_feed_loop = From} = State) ->
 handle_info({'EXIT', From, Reason}, #state{db_notifier = From} = State) ->
     ?LOG_ERROR("Database update notifier died. Reason: ~p", [Reason]),
     {stop, {db_update_notifier_died, Reason}, State};
-
-handle_info({'EXIT', _OldChangesLoop, rep_db_changed}, State) ->
-    {noreply, State};
 
 handle_info({'EXIT', From, Reason}, #state{changes_processor = From} = State) ->
     ?LOG_ERROR("Replicator DB changes processor died. Reason: ~p", [Reason]),
