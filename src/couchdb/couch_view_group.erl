@@ -659,21 +659,18 @@ new_btree_cache(GroupName) ->
     CacheConfig = case couch_config:get(
         "view_group_btree_cache", couch_util:to_list(GroupName)) of
     undefined ->
-        couch_config:get("view_group_btree_cache", "_default");
+        couch_config:get("view_group_btree_cache", "_default", "nil");
     Config ->
         Config
     end,
     {ok, ConfigTerm} = couch_util:parse_term(CacheConfig),
     new_cache(ConfigTerm).
 
+new_cache(nil) ->
+    nil;
 new_cache(Config) ->
-    case couch_util:get_value(size, Config) of
-    0 ->
-        nil;
-    Size when Size > 0 ->
-        {ok, Cache} = term_cache_trees:start_link(Config),
-        Cache
-    end.
+    {ok, Cache} = term_cache_trees:start_link(Config),
+    Cache.
 
 reopen_db(DbName, nil) ->
     couch_db:open_int(DbName, []);

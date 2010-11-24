@@ -13,23 +13,26 @@ max_dbs_open = 100
 delayed_commits = true ; set this to false to ensure an fsync before 201 Created is returned
 uri_file = %localstaterundir%/couch.uri
 
-; Cache size corresponds to maximum number of cache entries. A 0 size disables caching.
+; Cache size example values: 524288, "512Kb", "2Mb".
 ; Cache policy must be one of the following: lru, mru.
+; Comment the _default entry to completely disable caching.
 [database_btree_cache]
-; my_database = [{size, 500}, {policy, lru}]
-_default = [{size, 100}, {policy, lru}]
+; my_database = [{size, "2Mb"}, {policy, lru}]
+_default = [{size, "512Kb"}, {policy, lru}]
 
-; Cache size corresponds to maximum number of cache entries. A 0 size disables caching.
+; Cache size example values: 524288, "512Kb", "2Mb".
 ; Cache policy must be one of the following: lru, mru.
+; Comment the _default entry to completely disable caching.
 [doc_cache]
-; my_database = [{size, 100}, {policy, mru}]
-_default = [{size, 0}, {policy, lru}]
+; my_database = [{size, "2Mb"}, {policy, mru}]
+; _default = [{size, "8Mb"}, {policy, lru}]
 
-; Cache size corresponds to maximum number of cache entries. A 0 size disables caching.
+; Cache size example values: 524288, "512Kb", "2Mb".
 ; Cache policy must be one of the following: lru, mru.
+; Comment the _default entry to completely disable caching.
 [view_group_btree_cache]
-; _design/myddoc = [{size, 500}, {policy, lru}]
-_default = [{size, 100}, {policy, lru}]
+; _design/myddoc = [{size, "2Mb"}, {policy, lru}]
+_default = [{size, "512Kb"}, {policy, lru}]
 
 [httpd]
 port = 5984

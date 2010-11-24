@@ -335,12 +335,12 @@ get_node(#btree{fd = Fd, cache = nil}, NodePos) ->
     {NodeType, NodeList};
 get_node(#btree{fd = Fd, cache = Cache}, NodePos) when is_pid(Cache) ->
     case term_cache_trees:get(Cache, NodePos) of
-    {ok, Node} ->
-        Node;
+    {ok, NodeBin} ->
+        binary_to_term(NodeBin);
     not_found ->
-        {ok, {_Type, _NodeList} = Node} = couch_file:pread_term(Fd, NodePos),
-        ok = term_cache_trees:put(Cache, NodePos, Node),
-        Node
+        {ok, NodeBin} = couch_file:pread_binary(Fd, NodePos),
+        ok = term_cache_trees:put(Cache, NodePos, NodeBin),
+        binary_to_term(NodeBin)
     end.
 
 write_node(#btree{cache = Cache} = Bt, NodeType, NodeList) ->
@@ -349,11 +349,11 @@ write_node(#btree{cache = Cache} = Bt, NodeType, NodeList) ->
     % now write out each chunk and return the KeyPointer pairs for those nodes
     ResultList = [
         begin
-            Node = {NodeType, ANodeList},
-            {ok, Pointer} = couch_file:append_term(Bt#btree.fd, Node),
+            NodeBin = term_to_binary({NodeType, ANodeList}),
+            {ok, Pointer} = couch_file:append_binary(Bt#btree.fd, NodeBin),
             case Cache of
             Pid when is_pid(Pid) ->
-                ok = term_cache_trees:put(Cache, Pointer, Node);
+                ok = term_cache_trees:put(Cache, Pointer, NodeBin);
             nil ->
                 ok
             end,

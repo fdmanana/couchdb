@@ -1136,12 +1136,12 @@ read_doc(#db{fd = Fd, doc_cache = nil}, Pos) ->
     couch_file:pread_term(Fd, Pos);
 read_doc(#db{fd = Fd, doc_cache = Cache}, Pos) when is_pid(Cache) ->
     case term_cache_trees:get(Cache, Pos) of
-    {ok, Data} ->
-        {ok, Data};
+    {ok, DataBin} ->
+        {ok, binary_to_term(DataBin)};
     not_found ->
-        {ok, Data} = couch_file:pread_term(Fd, Pos),
-        ok = term_cache_trees:put(Cache, Pos, Data),
-        {ok, Data}
+        {ok, DataBin} = couch_file:pread_binary(Fd, Pos),
+        ok = term_cache_trees:put(Cache, Pos, DataBin),
+        {ok, binary_to_term(DataBin)}
     end.
 
 
