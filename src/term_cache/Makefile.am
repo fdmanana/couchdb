@@ -13,10 +13,12 @@
 termcacheebindir = $(localerlanglibdir)/term_cache/ebin
 
 termcache_file_collection = \
+    term_cache_dict.erl \
     term_cache_ets.erl \
     term_cache_trees.erl
 
 termcacheebin_make_generated_file_list = \
+    term_cache_dict.beam \
     term_cache_ets.beam \
     term_cache_trees.beam
 
