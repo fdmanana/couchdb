@@ -1135,12 +1135,12 @@ read_doc(#db{fd=Fd}, OldStreamPointer) when is_tuple(OldStreamPointer) ->
 read_doc(#db{fd = Fd, doc_cache = nil}, Pos) ->
     couch_file:pread_term(Fd, Pos);
 read_doc(#db{fd = Fd, doc_cache = Cache}, Pos) when is_pid(Cache) ->
-    case term_cache_trees:get(Cache, Pos) of
+    case term_cache_dict:get(Cache, Pos) of
     {ok, DataBin} ->
         {ok, binary_to_term(DataBin)};
     not_found ->
         {ok, DataBin} = couch_file:pread_binary(Fd, Pos),
-        ok = term_cache_trees:put(Cache, Pos, DataBin),
+        ok = term_cache_dict:put(Cache, Pos, DataBin),
         {ok, binary_to_term(DataBin)}
     end.
 
