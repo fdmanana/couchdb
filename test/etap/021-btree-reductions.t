@@ -17,6 +17,9 @@
 filename() -> "./test/etap/temp.021".
 rows() -> 1000.
 
+default_config() ->
+    [test_util:build_file("etc/couchdb/default_dev.ini")].
+
 main(_) ->
     test_util:init_code_path(),
     etap:plan(8),
@@ -30,6 +33,8 @@ main(_) ->
     ok.
 
 test()->
+    couch_config:start_link(default_config()),
+
     ReduceFun = fun
         (reduce, KVs) -> length(KVs);
         (rereduce, Reds) -> lists:sum(Reds)

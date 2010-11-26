@@ -13,6 +13,11 @@ max_dbs_open = 100
 delayed_commits = true ; set this to false to ensure an fsync before 201 Created is returned
 uri_file = %localstaterundir%/couch.uri
 
+[cache]
+; a cache is used per each file open (database file or a view index file)
+; example cache size values: 2Mb, 512Kb
+size = 2Mb
+
 [httpd]
 port = 5984
 bind_address = 127.0.0.1

@@ -13,6 +13,9 @@
 % License for the specific language governing permissions and limitations under
 % the License.
 
+default_config() ->
+    [test_util:build_file("etc/couchdb/default_dev.ini")].
+
 main(_) ->
     test_util:init_code_path(),
     etap:plan(13),
@@ -30,6 +33,8 @@ read_all(Fd, PosList) ->
     iolist_to_binary(Data).
 
 test() ->
+    couch_config:start_link(default_config()),
+
     {ok, Fd} = couch_file:open("test/etap/temp.050", [create,overwrite]),
     {ok, Stream} = couch_stream:open(Fd),
 

@@ -297,3 +297,7 @@
     db_open_options = []
 }).
 
+-record(file, {
+    fd,
+    cache
+}).

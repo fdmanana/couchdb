@@ -86,7 +86,7 @@ init({{_, DbName, _} = InitArgs, ReturnPid, Ref}) ->
             ignore;
         _ ->
             couch_db:monitor(Db),
-            {ok, RefCounter} = couch_ref_counter:start([Fd]),
+            {ok, RefCounter} = couch_ref_counter:start([Fd#file.fd]),
             Server = self(),
             {ok, Notifier} = couch_db_update_notifier:start_link(
                 fun({compacted, DbName1}) when DbName1 =:= DbName ->
@@ -180,7 +180,7 @@ handle_cast({start_compact, _}, State) ->
     %% compact already running, this is a no-op
     {noreply, State};
 
-handle_cast({compact_done, #group{current_seq=NewSeq} = NewGroup},
+handle_cast({compact_done, #group{current_seq=NewSeq, fd=NewFd} = NewGroup},
         #group_state{group = #group{current_seq=OldSeq}} = State)
         when NewSeq >= OldSeq ->
     #group_state{
@@ -211,9 +211,9 @@ handle_cast({compact_done, #group{current_seq=NewSeq} = NewGroup},
     %% cleanup old group
     unlink(CompactorPid),
     receive {'EXIT', CompactorPid, normal} -> ok after 0 -> ok end,
-    unlink(OldFd),
+    unlink(OldFd#file.fd),
     couch_ref_counter:drop(RefCounter),
-    {ok, NewRefCounter} = couch_ref_counter:start([NewGroup#group.fd]),
+    {ok, NewRefCounter} = couch_ref_counter:start([NewFd#file.fd]),
     case Group#group.db of
         nil -> ok;
         Else -> couch_db:close(Else)

@@ -17,6 +17,9 @@
 filename() -> test_util:build_file("test/etap/temp.011").
 sizeblock() -> 4096. % Need to keep this in sync with couch_file.erl
 
+default_config() ->
+    [test_util:build_file("etc/couchdb/default_dev.ini")].
+
 main(_) ->
     test_util:init_code_path(),
     {S1, S2, S3} = now(),
@@ -33,6 +36,7 @@ main(_) ->
     ok.
 
 test() ->
+    couch_config:start_link(default_config()),
     {ok, Fd} = couch_file:open(filename(), [create,overwrite]),
 
     etap:is({ok, 0}, couch_file:bytes(Fd),

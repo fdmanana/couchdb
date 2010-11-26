@@ -36,7 +36,7 @@ start_link(DbName, Filepath, Options) ->
     case open_db_file(Filepath, Options) of
     {ok, Fd} ->
         StartResult = gen_server:start_link(couch_db, {DbName, Filepath, Fd, Options}, []),
-        unlink(Fd),
+        unlink(Fd#file.fd),
         StartResult;
     Else ->
         Else

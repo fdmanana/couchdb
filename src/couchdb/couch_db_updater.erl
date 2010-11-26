@@ -164,7 +164,7 @@ handle_cast({compact_done, CompactFilepath}, #db{filepath=Filepath}=Db) ->
     {ok, NewHeader} = couch_file:read_header(NewFd),
     #db{update_seq=NewSeq} = NewDb =
             init_db(Db#db.name, Filepath, NewFd, NewHeader),
-    unlink(NewFd),
+    unlink(NewFd#file.fd),
     case Db#db.update_seq == NewSeq of
     true ->
         % suck up all the local docs into memory and write them to the new db
@@ -403,7 +403,7 @@ init_db(DbName, Filepath, Fd, Header0) ->
     {MegaSecs, Secs, MicroSecs} = now(),
     StartTime = ?l2b(io_lib:format("~p",
             [(MegaSecs*1000000*1000000) + (Secs*1000000) + MicroSecs])),
-    {ok, RefCntr} = couch_ref_counter:start([Fd]),
+    {ok, RefCntr} = couch_ref_counter:start([Fd#file.fd]),
     #db{
         update_pid=self(),
         fd=Fd,
@@ -874,7 +874,7 @@ start_copy_compact(#db{name=Name,filepath=Filepath}=Db) ->
         ok = couch_file:write_header(Fd, Header=#db_header{})
     end,
     NewDb = init_db(Name, CompactFile, Fd, Header),
-    unlink(Fd),
+    unlink(Fd#file.fd),
     NewDb2 = copy_compact(Db, NewDb, Retry),
     close_db(NewDb2),
     gen_server:cast(Db#db.update_pid, {compact_done, CompactFile}).

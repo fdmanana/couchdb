@@ -17,10 +17,11 @@
 
 -define(SIZE_BLOCK, 4096).
 
--record(file, {
+-record(fd, {
     fd,
     tail_append_begin = 0, % 09 UPGRADE CODE
-    eof = 0
+    eof = 0,
+    cache
     }).
 
 -export([open/1, open/2, close/1, bytes/1, sync/1, append_binary/2,old_pread/3]).
@@ -44,7 +45,8 @@ open(Filepath, Options) ->
     case gen_server:start_link(couch_file,
             {Filepath, Options, self(), Ref = make_ref()}, []) of
     {ok, Fd} ->
-        {ok, Fd};
+        {ok, Cache} = gen_server:call(Fd, get_cache, infinity),
+        {ok, #file{fd = Fd, cache = Cache}};
     ignore ->
         % get the error
         receive
@@ -83,15 +85,29 @@ append_term_md5(Fd, Term) ->
 %%  or {error, Reason}.
 %%----------------------------------------------------------------------
 
-append_binary(Fd, Bin) ->
+append_binary(#file{fd = Fd, cache = Cache}, Bin) ->
     Size = iolist_size(Bin),
-    gen_server:call(Fd, {append_bin,
-            [<<0:1/integer,Size:31/integer>>, Bin]}, infinity).
+    Result = gen_server:call(Fd, {append_bin,
+            [<<0:1/integer,Size:31/integer>>, Bin]}, infinity),
+    case Result of
+    {ok, Pos} ->
+        ok = couch_file_cache:put(Cache, Pos, Bin);
+    _ ->
+        ok
+    end,
+    Result.
     
-append_binary_md5(Fd, Bin) ->
+append_binary_md5(#file{fd = Fd, cache = Cache}, Bin) ->
     Size = iolist_size(Bin),
-    gen_server:call(Fd, {append_bin,
-            [<<1:1/integer,Size:31/integer>>, couch_util:md5(Bin), Bin]}, infinity).
+    Result = gen_server:call(Fd, {append_bin,
+            [<<1:1/integer,Size:31/integer>>, couch_util:md5(Bin), Bin]}, infinity),
+    case Result of
+    {ok, Pos} ->
+        ok = couch_file_cache:put(Cache, Pos, Bin);
+    _ ->
+        ok
+    end,
+    Result.
 
 
 %%----------------------------------------------------------------------
@@ -114,13 +130,29 @@ pread_term(Fd, Pos) ->
 %%  or {error, Reason}.
 %%----------------------------------------------------------------------
 
-pread_binary(Fd, Pos) ->
-    {ok, L} = pread_iolist(Fd, Pos),
-    {ok, iolist_to_binary(L)}.
+pread_binary(#file{fd = Fd, cache = Cache}, Pos) ->
+    case couch_file_cache:get(Cache, Pos) of
+    not_found ->
+        {ok, L} = gen_server:call(Fd, {pread_iolist, Pos}, infinity),
+        Bin = iolist_to_binary(L),
+        ok = couch_file_cache:put(Cache, Pos, Bin),
+        {ok, Bin};
+    {ok, Bin} ->
+        {ok, Bin}
+    end.
 
 
-pread_iolist(Fd, Pos) ->
-    gen_server:call(Fd, {pread_iolist, Pos}, infinity).
+pread_iolist(#file{fd = Fd, cache = Cache}, Pos) ->
+    case couch_file_cache:get(Cache, Pos) of
+    not_found ->
+        {ok, IoList} = gen_server:call(Fd, {pread_iolist, Pos}, infinity),
+        ok = couch_file_cache:put(Cache, Pos, term_to_binary(IoList)),
+        {ok, IoList};
+    {ok, Bin} when is_binary(Bin) ->
+        {ok, binary_to_term(Bin)};
+    {ok, IoList} ->
+        {ok, IoList}
+    end.
 
 %%----------------------------------------------------------------------
 %% Purpose: The length of a file, in bytes.
@@ -129,7 +161,7 @@ pread_iolist(Fd, Pos) ->
 %%----------------------------------------------------------------------
 
 % length in bytes
-bytes(Fd) ->
+bytes(#file{fd = Fd}) ->
     gen_server:call(Fd, bytes, infinity).
 
 %%----------------------------------------------------------------------
@@ -138,7 +170,8 @@ bytes(Fd) ->
 %%  or {error, Reason}.
 %%----------------------------------------------------------------------
 
-truncate(Fd, Pos) ->
+truncate(#file{fd = Fd}, Pos) ->
+    % TODO: maybe flush cache
     gen_server:call(Fd, {truncate, Pos}, infinity).
 
 %%----------------------------------------------------------------------
@@ -150,14 +183,14 @@ truncate(Fd, Pos) ->
 sync(Filepath) when is_list(Filepath) ->
     {ok, Fd} = file:open(Filepath, [append, raw]),
     try file:sync(Fd) after file:close(Fd) end;
-sync(Fd) ->
+sync(#file{fd = Fd}) ->
     gen_server:call(Fd, sync, infinity).
 
 %%----------------------------------------------------------------------
 %% Purpose: Close the file.
 %% Returns: ok
 %%----------------------------------------------------------------------
-close(Fd) ->
+close(#file{fd = Fd}) ->
     couch_util:shutdown_sync(Fd).
 
 
@@ -192,16 +225,16 @@ init_delete_dir(RootDir) ->
 
 
 % 09 UPGRADE CODE
-old_pread(Fd, Pos, Len) ->
+old_pread(#file{fd = Fd}, Pos, Len) ->
     {ok, <<RawBin:Len/binary>>, false} = gen_server:call(Fd, {pread, Pos, Len}, infinity),
     {ok, RawBin}.
 
 % 09 UPGRADE CODE
-upgrade_old_header(Fd, Sig) ->
+upgrade_old_header(#file{fd = Fd}, Sig) ->
     gen_server:call(Fd, {upgrade_old_header, Sig}, infinity).
 
 
-read_header(Fd) ->
+read_header(#file{fd = Fd}) ->
     case gen_server:call(Fd, find_header, infinity) of
     {ok, Bin} ->
         {ok, binary_to_term(Bin)};
@@ -209,7 +242,7 @@ read_header(Fd) ->
         Else
     end.
 
-write_header(Fd, Data) ->
+write_header(#file{fd = Fd}, Data) ->
     Bin = term_to_binary(Data),
     Md5 = couch_util:md5(Bin),
     % now we assemble the final header binary and write to disk
@@ -244,14 +277,14 @@ init({Filepath, Options, ReturnPid, Ref}) ->
                     ok = file:truncate(Fd),
                     ok = file:sync(Fd),
                     maybe_track_open_os_files(Options),
-                    {ok, #file{fd=Fd}};
+                    {ok, #fd{fd = Fd, cache = new_cache()}};
                 false ->
                     ok = file:close(Fd),
                     init_status_error(ReturnPid, Ref, file_exists)
                 end;
             false ->
                 maybe_track_open_os_files(Options),
-                {ok, #file{fd=Fd}}
+                {ok, #fd{fd = Fd, cache = new_cache()}}
             end;
         Error ->
             init_status_error(ReturnPid, Ref, Error)
@@ -264,11 +297,16 @@ init({Filepath, Options, ReturnPid, Ref}) ->
             ok = file:close(Fd_Read),
             maybe_track_open_os_files(Options),
             {ok, Length} = file:position(Fd, eof),
-            {ok, #file{fd=Fd, eof=Length}};
+            {ok, #fd{fd = Fd, eof = Length, cache = new_cache()}};
         Error ->
             init_status_error(ReturnPid, Ref, Error)
         end
     end.
+
+new_cache() ->
+    Size = couch_config:get("cache", "size"),
+    {ok, Cache} = couch_file_cache:start_link([{size, Size}, {policy, lru}]),
+    Cache.
 
 maybe_track_open_os_files(FileOptions) ->
     case lists:member(sys_db, FileOptions) of
@@ -278,9 +316,13 @@ maybe_track_open_os_files(FileOptions) ->
         couch_stats_collector:track_process_count({couchdb, open_os_files})
     end.
 
-terminate(_Reason, #file{fd = Fd}) ->
-    ok = file:close(Fd).
+terminate(_Reason, #fd{fd = Fd, cache = Cache}) ->
+    ok = file:close(Fd),
+    ok = couch_file_cache:stop(Cache).
 
+
+handle_call(get_cache, _From, #fd{cache = Cache} = File) ->
+    {reply, {ok, Cache}, File};
 
 handle_call({pread_iolist, Pos}, _From, File) ->
     {RawData, NextPos} = try
@@ -306,30 +348,30 @@ handle_call({pread_iolist, Pos}, _From, File) ->
         IoList = maybe_read_more_iolist(RestRawData, Len, NextPos, File),
         {reply, {ok, IoList}, File}
     end;
-handle_call({pread, Pos, Bytes}, _From, #file{fd=Fd,tail_append_begin=TailAppendBegin}=File) ->
+handle_call({pread, Pos, Bytes}, _From, #fd{fd=Fd,tail_append_begin=TailAppendBegin}=File) ->
     {ok, Bin} = file:pread(Fd, Pos, Bytes),
     {reply, {ok, Bin, Pos >= TailAppendBegin}, File};
-handle_call(bytes, _From, #file{eof=Length}=File) ->
+handle_call(bytes, _From, #fd{eof=Length}=File) ->
     {reply, {ok, Length}, File};
-handle_call(sync, _From, #file{fd=Fd}=File) ->
+handle_call(sync, _From, #fd{fd=Fd}=File) ->
     {reply, file:sync(Fd), File};
-handle_call({truncate, Pos}, _From, #file{fd=Fd}=File) ->
+handle_call({truncate, Pos}, _From, #fd{fd=Fd}=File) ->
     {ok, Pos} = file:position(Fd, Pos),
     case file:truncate(Fd) of
     ok ->
-        {reply, ok, File#file{eof=Pos}};
+        {reply, ok, File#fd{eof=Pos}};
     Error ->
         {reply, Error, File}
     end;
-handle_call({append_bin, Bin}, _From, #file{fd=Fd, eof=Pos}=File) ->
+handle_call({append_bin, Bin}, _From, #fd{fd=Fd, eof=Pos}=File) ->
     Blocks = make_blocks(Pos rem ?SIZE_BLOCK, Bin),
     case file:write(Fd, Blocks) of
     ok ->
-        {reply, {ok, Pos}, File#file{eof=Pos+iolist_size(Blocks)}};
+        {reply, {ok, Pos}, File#fd{eof=Pos+iolist_size(Blocks)}};
     Error ->
         {reply, Error, File}
     end;
-handle_call({write_header, Bin}, _From, #file{fd=Fd, eof=Pos}=File) ->
+handle_call({write_header, Bin}, _From, #fd{fd=Fd, eof=Pos}=File) ->
     BinSize = size(Bin),
     case Pos rem ?SIZE_BLOCK of
     0 ->
@@ -340,34 +382,34 @@ handle_call({write_header, Bin}, _From, #file{fd=Fd, eof=Pos}=File) ->
     FinalBin = [Padding, <<1, BinSize:32/integer>> | make_blocks(5, [Bin])],
     case file:write(Fd, FinalBin) of
     ok ->
-        {reply, ok, File#file{eof=Pos+iolist_size(FinalBin)}};
+        {reply, ok, File#fd{eof=Pos+iolist_size(FinalBin)}};
     Error ->
         {reply, Error, File}
     end;
 
 
-handle_call({upgrade_old_header, Prefix}, _From, #file{fd=Fd}=File) ->
+handle_call({upgrade_old_header, Prefix}, _From, #fd{fd=Fd}=File) ->
     case (catch read_old_header(Fd, Prefix)) of
     {ok, Header} ->
-        TailAppendBegin = File#file.eof,
+        TailAppendBegin = File#fd.eof,
         Bin = term_to_binary(Header),
         Md5 = couch_util:md5(Bin),
         % now we assemble the final header binary and write to disk
         FinalBin = <<Md5/binary, Bin/binary>>,
         {reply, ok, _} = handle_call({write_header, FinalBin}, ok, File),
         ok = write_old_header(Fd, <<"upgraded">>, TailAppendBegin),
-        {reply, ok, File#file{tail_append_begin=TailAppendBegin}};
+        {reply, ok, File#fd{tail_append_begin=TailAppendBegin}};
     _Error ->
         case (catch read_old_header(Fd, <<"upgraded">>)) of
         {ok, TailAppendBegin} ->
-            {reply, ok, File#file{tail_append_begin = TailAppendBegin}};
+            {reply, ok, File#fd{tail_append_begin = TailAppendBegin}};
         _Error2 ->
             {reply, ok, File}
         end
     end;
 
 
-handle_call(find_header, _From, #file{fd=Fd, eof=Pos}=File) ->
+handle_call(find_header, _From, #fd{fd=Fd, eof=Pos}=File) ->
     {reply, find_header(Fd, Pos div ?SIZE_BLOCK), File}.
 
 % 09 UPGRADE CODE
@@ -520,11 +562,11 @@ maybe_read_more_iolist(Buffer, DataSize, NextPos, File) ->
         read_raw_iolist_int(File, NextPos, DataSize - byte_size(Buffer)),
     [Buffer, Missing].
 
--spec read_raw_iolist_int(#file{}, Pos::non_neg_integer(), Len::non_neg_integer()) ->
+-spec read_raw_iolist_int(#fd{}, Pos::non_neg_integer(), Len::non_neg_integer()) ->
     {Data::iolist(), CurPos::non_neg_integer()}.
 read_raw_iolist_int(Fd, {Pos, _Size}, Len) -> % 0110 UPGRADE CODE
     read_raw_iolist_int(Fd, Pos, Len);
-read_raw_iolist_int(#file{fd=Fd, tail_append_begin=TAB}, Pos, Len) ->
+read_raw_iolist_int(#fd{fd=Fd, tail_append_begin=TAB}, Pos, Len) ->
     BlockOffset = Pos rem ?SIZE_BLOCK,
     TotalBytes = calculate_total_read_len(BlockOffset, Len),
     {ok, <<RawBin:TotalBytes/binary>>} = file:pread(Fd, Pos, TotalBytes),
