@@ -170,7 +170,7 @@ free_cache_entry(#state{take_fun = TakeFun, atimes = ATimes,
     {ATime, Key, ATimes2} = TakeFun(ATimes),
     [{Key, {Item, ATime}}] = ets:lookup(Items, Key),
     true = ets:delete(Items, Key),
-    State#state{atimes = ATimes2, free = Free + byte_size(Item)}.
+    State#state{atimes = ATimes2, free = Free + bin_size(Item)}.
 
 
 
