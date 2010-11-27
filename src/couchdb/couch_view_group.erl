@@ -542,7 +542,8 @@ get_group_info(State) ->
         sig = GroupSig,
         def_lang = Lang,
         current_seq=CurrentSeq,
-        purge_seq=PurgeSeq
+        purge_seq=PurgeSeq,
+        btree_cache=BtreeCache
     } = Group,
     {ok, Size} = couch_file:bytes(Fd),
     [
@@ -555,7 +556,14 @@ get_group_info(State) ->
         {waiting_clients, length(WaitersList)},
         {update_seq, CurrentSeq},
         {purge_seq, PurgeSeq}
-    ].
+    ] ++
+    case BtreeCache of
+    nil ->
+        [];
+    _ ->
+        {ok, BtreeCacheStats} = couch_cache:get_stats(BtreeCache),
+        [{btree_cache_stats, {BtreeCacheStats}}]
+    end.
 
 % maybe move to another module
 design_doc_to_view_group(#doc{id=Id,body={Fields}}) ->
