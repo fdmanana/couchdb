@@ -212,7 +212,7 @@ handle_cast({compact_done, #group{current_seq=NewSeq} = NewGroup},
     unlink(CompactorPid),
     receive {'EXIT', CompactorPid, normal} -> ok after 0 -> ok end,
     unlink(OldFd),
-    couch_cache:stop(Group#group.btree_cache),
+    stop_cache(Group#group.btree_cache),
     couch_ref_counter:drop(RefCounter),
     {ok, NewRefCounter} = couch_ref_counter:start([NewGroup#group.fd]),
     case Group#group.db of
@@ -364,7 +364,7 @@ terminate(Reason, #group_state{updater_pid=Update, compactor_pid=Compact}=S) ->
     reply_all(S, Reason),
     couch_util:shutdown_sync(Update),
     couch_util:shutdown_sync(Compact),
-    ok = couch_cache:stop((S#group_state.group)#group.btree_cache).
+    stop_cache((S#group_state.group)#group.btree_cache).
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
@@ -671,6 +671,11 @@ new_cache(nil) ->
 new_cache(Config) ->
     {ok, Cache} = couch_cache:start_link(Config),
     Cache.
+
+stop_cache(nil) ->
+    ok;
+stop_cache(Cache) ->
+    ok = couch_cache:stop(Cache).
 
 reopen_db(DbName, nil) ->
     couch_db:open_int(DbName, []);

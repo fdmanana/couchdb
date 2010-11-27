@@ -52,8 +52,8 @@ terminate(_Reason, Db) ->
     couch_file:close(Db#db.fd),
     couch_util:shutdown_sync(Db#db.compactor_pid),
     couch_util:shutdown_sync(Db#db.fd_ref_counter),
-    ok = couch_cache:stop(Db#db.btree_cache),
-    ok = couch_cache:stop(Db#db.doc_cache).
+    stop_cache(Db#db.btree_cache),
+    stop_cache(Db#db.doc_cache).
 
 handle_call(get_db, _From, Db) ->
     {reply, {ok, Db}, Db};
@@ -916,3 +916,8 @@ new_cache(nil) ->
 new_cache(Config) ->
     {ok, Cache} = couch_cache:start_link(Config),
     Cache.
+
+stop_cache(nil) ->
+    ok;
+stop_cache(Cache) ->
+    ok = couch_cache:stop(Cache).
