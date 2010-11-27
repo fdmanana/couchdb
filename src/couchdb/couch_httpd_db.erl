@@ -208,7 +208,7 @@ do_db_req(#httpd{user_ctx=UserCtx,path_parts=[DbName|_]}=Req, Fun) ->
     end.
 
 db_req(#httpd{method='GET',path_parts=[_DbName]}=Req, Db) ->
-    {ok, DbInfo} = couch_db:get_db_info(Db),
+    {ok, DbInfo} = couch_db:get_db_info(Db, [cache_stats]),
     send_json(Req, {DbInfo});
 
 db_req(#httpd{method='POST',path_parts=[DbName]}=Req, Db) ->

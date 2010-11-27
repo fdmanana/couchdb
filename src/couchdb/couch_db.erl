@@ -13,7 +13,8 @@
 -module(couch_db).
 -behaviour(gen_server).
 
--export([open/2,open_int/2,close/1,create/2,start_compact/1,get_db_info/1,get_design_docs/1]).
+-export([open/2,open_int/2,close/1,create/2,start_compact/1,get_design_docs/1]).
+-export([get_db_info/1, get_db_info/2]).
 -export([open_ref_counted/2,is_idle/1,monitor/1,count_changes_since/2]).
 -export([update_doc/3,update_doc/4,update_docs/4,update_docs/2,update_docs/3,delete_doc/3]).
 -export([get_doc_info/2,open_doc/2,open_doc/3,open_doc_revs/4]).
@@ -246,6 +247,9 @@ get_last_purged(#db{fd=Fd, header=#db_header{purged_docs=PurgedPointer}}) ->
     couch_file:pread_term(Fd, PurgedPointer).
 
 get_db_info(Db) ->
+    get_db_info(Db, []).
+
+get_db_info(Db, Options) ->
     #db{fd=Fd,
         header=#db_header{disk_version=DiskVersion},
         compactor_pid=Compactor,
@@ -258,6 +262,25 @@ get_db_info(Db) ->
         doc_cache=DocCache} = Db,
     {ok, Size} = couch_file:bytes(Fd),
     {ok, {Count, DelCount}} = couch_btree:full_reduce(FullDocBtree),
+    ExtraInfo = case lists:member(cache_stats, Options) of
+    false ->
+        [];
+    true ->
+        case BtreeCache of
+        nil ->
+            [];
+        _ ->
+            {ok, BtreeCacheStats} = couch_cache:get_stats(BtreeCache),
+            [{btree_cache_stats, {BtreeCacheStats}}]
+        end ++
+        case DocCache of
+        nil ->
+            [];
+        _ ->
+            {ok, DocCacheStats} = couch_cache:get_stats(DocCache),
+            [{doc_cache_stats, {DocCacheStats}}]
+        end
+    end,
     InfoList = [
         {db_name, Name},
         {doc_count, Count},
@@ -269,21 +292,7 @@ get_db_info(Db) ->
         {instance_start_time, StartTime},
         {disk_format_version, DiskVersion},
         {committed_update_seq, CommittedUpdateSeq}
-    ] ++
-    case BtreeCache of
-    nil ->
-        [];
-    _ ->
-        {ok, BtreeCacheStats} = couch_cache:get_stats(BtreeCache),
-        [{btree_cache_stats, {BtreeCacheStats}}]
-    end ++
-    case DocCache of
-    nil ->
-        [];
-    _ ->
-        {ok, DocCacheStats} = couch_cache:get_stats(DocCache),
-        [{doc_cache_stats, {DocCacheStats}}]
-    end,
+    ] ++ ExtraInfo,
     {ok, InfoList}.
 
 get_design_docs(#db{fulldocinfo_by_id_btree=Btree}=Db) ->
