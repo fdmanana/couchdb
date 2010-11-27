@@ -333,13 +333,13 @@ reduce_node(#btree{reduce=R}=Bt, kv_node, NodeList) ->
 get_node(#btree{fd = Fd, cache = nil}, NodePos) ->
     {ok, {NodeType, NodeList}} = couch_file:pread_term(Fd, NodePos),
     {NodeType, NodeList};
-get_node(#btree{fd = Fd, cache = Cache}, NodePos) when is_pid(Cache) ->
-    case term_cache_trees:get(Cache, NodePos) of
+get_node(#btree{fd = Fd, cache = Cache}, NodePos) ->
+    case couch_cache:get(Cache, NodePos) of
     {ok, NodeBin} ->
         binary_to_term(NodeBin);
     not_found ->
         {ok, NodeBin} = couch_file:pread_binary(Fd, NodePos),
-        ok = term_cache_trees:put(Cache, NodePos, NodeBin),
+        ok = couch_cache:put(Cache, NodePos, NodeBin),
         binary_to_term(NodeBin)
     end.
 
@@ -352,10 +352,10 @@ write_node(#btree{cache = Cache} = Bt, NodeType, NodeList) ->
             NodeBin = term_to_binary({NodeType, ANodeList}),
             {ok, Pointer} = couch_file:append_binary(Bt#btree.fd, NodeBin),
             case Cache of
-            Pid when is_pid(Pid) ->
-                ok = term_cache_trees:put(Cache, Pointer, NodeBin);
             nil ->
-                ok
+                ok;
+            _ ->
+                ok = couch_cache:put(Cache, Pointer, NodeBin)
             end,
             {LastKey, _} = lists:last(ANodeList),
             {LastKey, {Pointer, reduce_node(Bt, NodeType, ANodeList)}}

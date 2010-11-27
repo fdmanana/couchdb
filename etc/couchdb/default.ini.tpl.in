@@ -25,7 +25,7 @@ _default = [{size, "512Kb"}, {policy, lru}]
 ; Comment the _default entry to completely disable caching.
 [doc_cache]
 ; my_database = [{size, "2Mb"}, {policy, mru}]
-; _default = [{size, "8Mb"}, {policy, lru}]
+_default = [{size, "1Mb"}, {policy, lru}]
 
 ; Cache size example values: 524288, "512Kb", "2Mb".
 ; Cache policy must be one of the following: lru, mru.
