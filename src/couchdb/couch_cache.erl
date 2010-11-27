@@ -20,6 +20,7 @@
 % public API
 -export([start_link/1, stop/1]).
 -export([get/2, put/3]).
+-export([get_stats/1]).
 
 % gen_server callbacks
 -export([init/1, handle_call/3, handle_info/2, handle_cast/2]).
@@ -41,7 +42,9 @@
     policy,
     items,
     atimes,
-    take_fun
+    take_fun,
+    hits = 0,
+    misses = 0
 }).
 
 %% @type cache() = #cache{}
@@ -53,6 +56,7 @@
 get(#cache{ets = Ets, pid = Pid}, Key) ->
     case ets:lookup(Ets, Key) of
     [] ->
+        ok = gen_server:cast(Pid, cache_miss),
         not_found;
     [{Key, {{bin, Bin}, _}}] ->
         ok = gen_server:cast(Pid, {cache_hit, Key, erlang:now()}),
@@ -68,6 +72,12 @@ put(#cache{pid = Pid}, Key, Item) when is_binary(Item) ->
     ok = gen_server:cast(Pid, {put, Key, Item});
 put(#cache{pid = Pid}, Key, Item) ->
     ok = gen_server:cast(Pid, {put, Key, {bin, term_to_binary(Item)}}).
+
+
+%% @spec get_stats(cache()) -> {ok, [ stat() ]}
+%% @type stat() = {hits, int()} | {misses, int()} | {size, int()} | {free, int()}
+get_stats(#cache{pid = Pid}) ->
+    gen_server:call(Pid, get_stats, infinity).
 
 
 %% @spec start_link(options()) -> {ok, #cache{}}
@@ -131,20 +141,28 @@ handle_cast({put, Key, Item}, #state{items = Items} = State) ->
     end;
 
 handle_cast({cache_hit, Key, NewATime},
-    #state{items = Items, atimes = ATimes} = State) ->
+    #state{items = Items, atimes = ATimes, hits = Hits} = State) ->
     case ets:lookup(Items, Key) of
     [] ->
-        {noreply, State};
+        {noreply, State#state{hits = Hits + 1}};
     [{Key, {Item, OldATime}}] ->
         ATimes2 = gb_trees:insert(
             NewATime, Key, gb_trees:delete(OldATime, ATimes)),
         true = ets:insert(Items, {Key, {Item, NewATime}}),
-        {noreply, State#state{atimes = ATimes2}}
-    end.
+        {noreply, State#state{atimes = ATimes2, hits = Hits + 1}}
+    end;
+
+handle_cast(cache_miss, #state{misses = Misses} = State) ->
+    {noreply, State#state{misses = Misses + 1}}.
 
 
 handle_call(get_ets, _From, #state{items = Items} = State) ->
    {reply, {ok, Items}, State};
+
+handle_call(get_stats, _From, #state{cache_size = Size, free = Free,
+   hits = Hits, misses = Misses} = State) ->
+   Stats = [{size, Size}, {free, Free}, {hits, Hits}, {misses, Misses}],
+   {reply, {ok, Stats}, State};
 
 handle_call(stop, _From, State) ->
     {stop, normal, ok, State}.

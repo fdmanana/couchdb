@@ -253,7 +253,9 @@ get_db_info(Db) ->
         name=Name,
         fulldocinfo_by_id_btree=FullDocBtree,
         instance_start_time=StartTime,
-        committed_update_seq=CommittedUpdateSeq} = Db,
+        committed_update_seq=CommittedUpdateSeq,
+        btree_cache=BtreeCache,
+        doc_cache=DocCache} = Db,
     {ok, Size} = couch_file:bytes(Fd),
     {ok, {Count, DelCount}} = couch_btree:full_reduce(FullDocBtree),
     InfoList = [
@@ -267,7 +269,21 @@ get_db_info(Db) ->
         {instance_start_time, StartTime},
         {disk_format_version, DiskVersion},
         {committed_update_seq, CommittedUpdateSeq}
-        ],
+    ] ++
+    case BtreeCache of
+    nil ->
+        [];
+    _ ->
+        {ok, BtreeCacheStats} = couch_cache:get_stats(BtreeCache),
+        [{btree_cache_stats, {BtreeCacheStats}}]
+    end ++
+    case DocCache of
+    nil ->
+        [];
+    _ ->
+        {ok, DocCacheStats} = couch_cache:get_stats(DocCache),
+        [{doc_cache_stats, {DocCacheStats}}]
+    end,
     {ok, InfoList}.
 
 get_design_docs(#db{fulldocinfo_by_id_btree=Btree}=Db) ->
