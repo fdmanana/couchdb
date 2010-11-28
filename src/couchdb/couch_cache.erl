@@ -146,10 +146,15 @@ handle_cast({cache_hit, Key, NewATime},
     [] ->
         {noreply, State#state{hits = Hits + 1}};
     [{Key, {Item, OldATime}}] ->
-        ATimes2 = gb_trees:insert(
-            NewATime, Key, gb_trees:delete(OldATime, ATimes)),
-        true = ets:insert(Items, {Key, {Item, NewATime}}),
-        {noreply, State#state{atimes = ATimes2, hits = Hits + 1}}
+        case NewATime =< OldATime of
+        true ->
+            {noreply, State#state{hits = Hits + 1}};
+        false ->
+            ATimes2 = gb_trees:insert(
+                NewATime, Key, gb_trees:delete(OldATime, ATimes)),
+            true = ets:insert(Items, {Key, {Item, NewATime}}),
+            {noreply, State#state{atimes = ATimes2, hits = Hits + 1}}
+        end
     end;
 
 handle_cast(cache_miss, #state{misses = Misses} = State) ->
