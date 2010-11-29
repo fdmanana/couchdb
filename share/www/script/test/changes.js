@@ -205,6 +205,13 @@ couchTests.changes = function(debug) {
     views : {
       local_seq : {
         map : "function(doc) {emit(doc._local_seq, null)}"
+      },
+      blah: {
+        map : 'function(doc) {' +
+              '  if (doc._id == "blah") {' +
+              '    emit(doc._id, null);' +
+              '  }' +
+              '}'
       }
     }
   };
@@ -319,7 +326,16 @@ couchTests.changes = function(debug) {
   var resp = JSON.parse(req.responseText);
   var expect = (!is_safari && xhr) ? 3: 1;
   TEquals(expect, resp.results.length, "should return matching rows");
-  
+ 
+  // test filter on view function (map)
+  //
+  T(db.save({"_id":"blah", "bop" : "plankton"}).ok);
+  var req = CouchDB.request("GET", "/test_suite_db/_changes?filter=_view&view=changes_filter/blah");
+  var resp = JSON.parse(req.responseText);
+  T(resp.results.length === 1);
+  T(resp.results[0].id === "blah");
+
+
   // test for userCtx
   run_on_modified_server(
     [{section: "httpd",
@@ -377,7 +393,7 @@ couchTests.changes = function(debug) {
           '  Value = couch_util:get_value(<<"value">>, Doc),' +
           '  (Value rem 2) =:= 0' +
           'end.'
-      }
+      },
     };
 
     db.deleteDb();
@@ -458,6 +474,10 @@ couchTests.changes = function(debug) {
         T(line.seq == 8);
         T(line.id == "andmore");
     }
+
+    
+
+
     
   });
 
