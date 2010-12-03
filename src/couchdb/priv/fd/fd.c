@@ -13,7 +13,13 @@ specific language governing permissions and limitations under the License.
 
 */
 
+#ifdef HAVE_CONFIG_H
+#include "config.h"
+#endif
+
 #include <sys/param.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -43,7 +49,7 @@ static ERL_NIF_TERM open_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]
   ERL_NIF_TERM tail, opt;
   char fname[MAXPATHLEN];
   char str[64];
-  int flags = O_RDONLY;
+  int flags = O_RDONLY | O_LARGEFILE;
   int mode = S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP|S_IROTH;
   int fd;
 
@@ -100,7 +106,15 @@ static ERL_NIF_TERM sync_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]
   #ifdef __APPLE__
   fcntl(fd, F_FULLFSYNC);
   #else
-  fsync(fd);
+  if (0 != fsync(fd)) {
+    return enif_make_tuple(
+      env,
+      2,
+      enif_make_atom(env, "fsync_error"),
+      /* enif_make_atom(env, sys_errlist[errno]) */
+      enif_make_int(env, errno)
+    );
+  }
   #endif
 
   return enif_make_atom(env, "ok");
@@ -109,7 +123,7 @@ static ERL_NIF_TERM sync_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]
 static ERL_NIF_TERM truncate_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 {
   int fd;
-  long pos;
+  ErlNifSInt64 pos;
 
   if (!enif_get_int(env, argv[0], &fd))
     return enif_make_badarg(env);
@@ -117,15 +131,23 @@ static ERL_NIF_TERM truncate_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM ar
   if (argc > 1 && !enif_get_int64(env, argv[1], &pos))
     return enif_make_badarg(env);
 
-  ftruncate(fd, pos);
+  if (0 == ftruncate(fd, pos)) {
+    return enif_make_atom(env, "ok");
+  }
 
-  return enif_make_atom(env, "ok");
+  return enif_make_tuple(
+    env,
+    2,
+    enif_make_atom(env, "ftruncate_error"),
+    /* enif_make_atom(env, sys_errlist[errno]) */
+    enif_make_int(env, errno)
+  );
 }
 
 static ERL_NIF_TERM position_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 {
   int fd;
-  long pos;
+  ErlNifSInt64 pos;
   char eof[4];
   
   if (!enif_get_int(env, argv[0], &fd))
@@ -181,8 +203,9 @@ static ERL_NIF_TERM write_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[
 static ERL_NIF_TERM pwrite_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 {
   int fd;
-  long pos;
+  ErlNifSInt64 pos;
   ErlNifBinary bin;
+  ssize_t written;
 
   if (!enif_get_int(env, argv[0], &fd))
     return enif_make_badarg(env);
@@ -193,16 +216,24 @@ static ERL_NIF_TERM pwrite_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv
   if (!enif_inspect_iolist_as_binary(env, argv[2], &bin))
     return enif_make_badarg(env);
 
+  written = pwrite(fd, bin.data, bin.size, pos);
+
+  if (written < 0) {
+      return enif_make_tuple(env, 2,
+                             enif_make_atom(env, "pwrite_error"),
+                             enif_make_int(env, errno));
+  }
+
   return enif_make_tuple(env, 2, 
                          enif_make_atom(env, "ok"),
-                         enif_make_long(env, pwrite(fd, bin.data, bin.size, pos)));
+                         enif_make_long(env, written));
 }
 
 int do_pread(ErlNifEnv* env, int fd, 
              ERL_NIF_TERM pos_term, ERL_NIF_TERM size_term,
              ERL_NIF_TERM* data)
 {
-  long pos;
+  ErlNifSInt64 pos;
   size_t size;
   ErlNifBinary bin;  
   size_t result;
