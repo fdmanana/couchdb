@@ -244,14 +244,14 @@ init({Filepath, Options, ReturnPid, Ref}) ->
                     ok = file:truncate(Fd),
                     ok = file:sync(Fd),
                     maybe_track_open_os_files(Options),
-                    {ok, #file{fd = Fd}};
+                    {ok, #file{fd=Fd}};
                 false ->
                     ok = file:close(Fd),
                     init_status_error(ReturnPid, Ref, file_exists)
                 end;
             false ->
                 maybe_track_open_os_files(Options),
-                {ok, #file{fd = Fd}}
+                {ok, #file{fd=Fd}}
             end;
         Error ->
             init_status_error(ReturnPid, Ref, Error)
@@ -263,7 +263,7 @@ init({Filepath, Options, ReturnPid, Ref}) ->
             {ok, Fd} = file:open(Filepath, OpenOptions),
             ok = file:close(Fd_Read),
             maybe_track_open_os_files(Options),
-            {ok, #file{fd = Fd}};
+            {ok, #file{fd=Fd}};
         Error ->
             init_status_error(ReturnPid, Ref, Error)
         end
