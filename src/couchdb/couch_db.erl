@@ -43,13 +43,17 @@ start_link(DbName, Filepath, Options) ->
     end.
 
 open_db_file(Filepath, Options) ->
-    case couch_file:open(Filepath, Options) of
+    FilePreallocSize = list_to_integer(
+        couch_config:get("couchdb", "file_preallocation_size", "1048576")),
+    case couch_file:open(
+        Filepath, [{file_prealloc_size, FilePreallocSize} | Options]) of
     {ok, Fd} ->
         {ok, Fd};
     {error, enoent} ->
         % couldn't find file. is there a compact version? This can happen if
         % crashed during the file switch.
-        case couch_file:open(Filepath ++ ".compact") of
+        case couch_file:open(
+            Filepath ++ ".compact", [{file_prealloc_size, FilePreallocSize}]) of
         {ok, Fd} ->
             ?LOG_INFO("Found ~s~s compaction file, using as primary storage.", [Filepath, ".compact"]),
             ok = file:rename(Filepath ++ ".compact", Filepath),

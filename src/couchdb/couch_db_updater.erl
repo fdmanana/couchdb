@@ -160,7 +160,10 @@ handle_call(start_compact, _From, Db) ->
 
 
 handle_cast({compact_done, CompactFilepath}, #db{filepath=Filepath}=Db) ->
-    {ok, NewFd} = couch_file:open(CompactFilepath),
+    FilePreallocSize = list_to_integer(
+        couch_config:get("couchdb", "file_preallocation_size", "1048576")),
+    {ok, NewFd} = couch_file:open(
+        CompactFilepath, [{file_prealloc_size, FilePreallocSize}]),
     ReaderFd = open_reader_fd(CompactFilepath, Db#db.options),
     {ok, NewHeader} = couch_file:read_header(NewFd),
     #db{update_seq=NewSeq} = NewDb =
@@ -828,8 +831,11 @@ copy_compact(Db, NewDb0, Retry) ->
 
 start_copy_compact(#db{name=Name,filepath=Filepath}=Db) ->
     CompactFile = Filepath ++ ".compact",
+    FilePreallocSize = list_to_integer(
+        couch_config:get("couchdb", "file_preallocation_size", "1048576")),
     ?LOG_DEBUG("Compaction process spawned for db \"~s\"", [Name]),
-    case couch_file:open(CompactFile) of
+    case couch_file:open(
+        CompactFile, [{file_prealloc_size, FilePreallocSize}]) of
     {ok, Fd} ->
         couch_task_status:add_task(<<"Database Compaction">>, <<Name/binary, " retry">>, <<"Starting">>),
         Retry = true,
@@ -841,7 +847,8 @@ start_copy_compact(#db{name=Name,filepath=Filepath}=Db) ->
         end;
     {error, enoent} ->
         couch_task_status:add_task(<<"Database Compaction">>, Name, <<"Starting">>),
-        {ok, Fd} = couch_file:open(CompactFile, [create]),
+        {ok, Fd} = couch_file:open(
+            CompactFile, [create, {file_prealloc_size, FilePreallocSize}]),
         Retry = false,
         ok = couch_file:write_header(Fd, Header=#db_header{})
     end,

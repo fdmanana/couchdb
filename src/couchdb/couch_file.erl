@@ -18,7 +18,11 @@
 -define(SIZE_BLOCK, 4096).
 
 -record(file, {
-    fd
+    fd,
+    eof = 0,
+    real_eof = 0,
+    prealloc_size = 0,
+    read_only
 }).
 
 % public API
@@ -164,7 +168,14 @@ truncate(Fd, Pos) ->
 
 sync(Filepath) when is_list(Filepath) ->
     {ok, Fd} = file:open(Filepath, [append, raw]),
-    try file:sync(Fd) after file:close(Fd) end;
+    try
+        % file:datasync/1 introduced in OTP R14A
+        ok = file:datasync(Fd)
+    catch error:undef ->
+        ok = file:sync(Fd)
+    after
+        file:close(Fd)
+    end;
 sync(Fd) ->
     gen_server:call(Fd, sync, infinity).
 
@@ -232,6 +243,7 @@ init_status_error(ReturnPid, Ref, Error) ->
 
 init({Filepath, Options, ReturnPid, Ref}) ->
     process_flag(trap_exit, true),
+    Prealloc = couch_util:get_value(file_prealloc_size, Options, 0),
     OpenOptions = file_open_options(Options),
     case lists:member(create, Options) of
     true ->
@@ -250,14 +262,20 @@ init({Filepath, Options, ReturnPid, Ref}) ->
                     ok = file:truncate(Fd),
                     ok = file:sync(Fd),
                     maybe_track_open_os_files(Options),
-                    {ok, #file{fd=Fd}};
+                    {ok, #file{
+                        fd = Fd,
+                        prealloc_size = Prealloc,
+                        read_only = lists:member(read_only, Options)}};
                 false ->
                     ok = file:close(Fd),
                     init_status_error(ReturnPid, Ref, file_exists)
                 end;
             false ->
                 maybe_track_open_os_files(Options),
-                {ok, #file{fd=Fd}}
+                {ok, #file{
+                    fd = Fd,
+                    prealloc_size = Prealloc,
+                    read_only = lists:member(read_only, Options)}}
             end;
         Error ->
             init_status_error(ReturnPid, Ref, Error)
@@ -268,8 +286,14 @@ init({Filepath, Options, ReturnPid, Ref}) ->
         {ok, Fd_Read} ->
             {ok, Fd} = file:open(Filepath, OpenOptions),
             ok = file:close(Fd_Read),
+            {ok, Eof} = file:position(Fd, eof),
             maybe_track_open_os_files(Options),
-            {ok, #file{fd=Fd}};
+            {ok, #file{
+                fd = Fd,
+                prealloc_size = Prealloc,
+                eof = Eof,
+                real_eof = Eof,
+                read_only = lists:member(read_only, Options)}};
         Error ->
             init_status_error(ReturnPid, Ref, Error)
         end
@@ -280,7 +304,7 @@ file_open_options(Options) ->
     true ->
         [];
     false ->
-        [append]
+        [write]
     end.
 
 maybe_track_open_os_files(FileOptions) ->
@@ -291,7 +315,11 @@ maybe_track_open_os_files(FileOptions) ->
         couch_stats_collector:track_process_count({couchdb, open_os_files})
     end.
 
-terminate(_Reason, #file{fd = Fd}) ->
+terminate(_Reason, #file{fd = Fd, read_only = true}) ->
+    ok = file:close(Fd);
+terminate(_Reason, #file{fd = Fd, eof = Eof}) ->
+    {ok, Eof} = file:position(Fd, Eof),
+    ok = file:truncate(Fd),
     ok = file:close(Fd).
 
 
@@ -315,28 +343,39 @@ handle_call({pread_iolist, Pos}, _From, File) ->
         {reply, {ok, IoList, <<>>}, File}
     end;
 
-handle_call(bytes, _From, #file{fd = Fd} = File) ->
-    {reply, file:position(Fd, eof), File};
+handle_call(bytes, _From, #file{eof = Bytes} = File) ->
+    {reply, {ok, Bytes}, File};
 
 handle_call(sync, _From, #file{fd=Fd}=File) ->
-    {reply, file:sync(Fd), File};
+    Result = try
+        % file:datasync/1 introduced in OTP R14A
+        file:datasync(Fd)
+    catch error:undef ->
+        file:sync(Fd)
+    end,
+    {reply, Result, File};
 
 handle_call({truncate, Pos}, _From, #file{fd=Fd}=File) ->
     {ok, Pos} = file:position(Fd, Pos),
-    {reply, file:truncate(Fd), File};
-
-handle_call({append_bin, Bin}, _From, #file{fd = Fd} = File) ->
-    {ok, Pos} = file:position(Fd, eof),
-    Blocks = make_blocks(Pos rem ?SIZE_BLOCK, Bin),
-    case file:write(Fd, Blocks) of
+    case file:truncate(Fd) of
     ok ->
-        {reply, {ok, Pos}, File};
+        {reply, ok, File#file{eof = Pos, real_eof = Pos}};
     Error ->
         {reply, Error, File}
     end;
 
-handle_call({write_header, Bin}, _From, #file{fd = Fd} = File) ->
-    {ok, Pos} = file:position(Fd, eof),
+handle_call({append_bin, Bin}, From, #file{fd = Fd, eof = Pos} = File) ->
+    Blocks = make_blocks(Pos rem ?SIZE_BLOCK, Bin),
+    case file:pwrite(Fd, Pos, Blocks) of
+    ok ->
+        gen_server:reply(From, {ok, Pos}),
+        NewFile = maybe_prealloc(File#file{eof = Pos + iolist_size(Blocks)}),
+        {noreply, NewFile};
+    Error ->
+        {reply, Error, File}
+    end;
+
+handle_call({write_header, Bin}, From, #file{fd = Fd, eof = Pos} = File) ->
     BinSize = byte_size(Bin),
     case Pos rem ?SIZE_BLOCK of
     0 ->
@@ -345,10 +384,16 @@ handle_call({write_header, Bin}, _From, #file{fd = Fd} = File) ->
         Padding = <<0:(8*(?SIZE_BLOCK-BlockOffset))>>
     end,
     FinalBin = [Padding, <<1, BinSize:32/integer>> | make_blocks(5, [Bin])],
-    {reply, file:write(Fd, FinalBin), File};
+    case file:pwrite(Fd, Pos, FinalBin) of
+    ok ->
+        gen_server:reply(From, ok),
+        NewFile = maybe_prealloc(File#file{eof = Pos + iolist_size(FinalBin)}),
+        {noreply, NewFile};
+    Error ->
+        {reply, Error, File}
+    end;
 
-handle_call(find_header, _From, #file{fd = Fd} = File) ->
-    {ok, Pos} = file:position(Fd, eof),
+handle_call(find_header, _From, #file{fd = Fd, eof = Pos} = File) ->
     {reply, find_header(Fd, Pos div ?SIZE_BLOCK), File}.
 
 handle_cast(close, Fd) ->
@@ -361,6 +406,26 @@ handle_info({'EXIT', _, normal}, Fd) ->
     {noreply, Fd};
 handle_info({'EXIT', _, Reason}, Fd) ->
     {stop, Reason, Fd}.
+
+
+maybe_prealloc(#file{prealloc_size = 0} = File) ->
+    File;
+maybe_prealloc(#file{eof = Eof, real_eof = RealEof,
+    fd = Fd, prealloc_size = Size} = File) when Eof >= RealEof ->
+    NewLength = Eof + Size,
+    % file:allocate/2 will be available in future OTP releases
+    % Patch submitted in December 2010:
+    % http://erlang.2086793.n4.nabble.com/PATH-add-file-allocate-3-td3067708.html
+    % https://github.com/fdmanana/otp/commit/9870d9b91c3b751296eeefa68a5deda6bb53f4e3
+    case (catch file:allocate(Fd, NewLength)) of
+    ok ->
+        ok;
+    _ ->
+        ok = file:pwrite(Fd, Eof, <<0:(8 * Size)>>)
+    end,
+    File#file{real_eof = NewLength};
+maybe_prealloc(File) ->
+    File.
 
 
 find_header(_Fd, -1) ->

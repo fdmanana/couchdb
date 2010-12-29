@@ -440,18 +440,30 @@ index_file_name(compact, RootDir, DbName, GroupSig) ->
 
 open_index_file(RootDir, DbName, GroupSig) ->
     FileName = index_file_name(RootDir, DbName, GroupSig),
-    case couch_file:open(FileName) of
-    {ok, Fd}        -> {ok, Fd};
-    {error, enoent} -> couch_file:open(FileName, [create]);
-    Error           -> Error
+    FilePreallocSize = list_to_integer(
+        couch_config:get("couchdb", "file_preallocation_size", "1048576")),
+    case couch_file:open(FileName, [{file_prealloc_size, FilePreallocSize}]) of
+    {ok, _Fd} = Ok ->
+        Ok;
+    {error, enoent} ->
+        couch_file:open(
+            FileName, [create, {file_prealloc_size, FilePreallocSize}]);
+    Error ->
+        Error
     end.
 
 open_index_file(compact, RootDir, DbName, GroupSig) ->
     FileName = index_file_name(compact, RootDir, DbName, GroupSig),
-    case couch_file:open(FileName) of
-    {ok, Fd}        -> {ok, Fd};
-    {error, enoent} -> couch_file:open(FileName, [create]);
-    Error           -> Error
+    FilePreallocSize = list_to_integer(
+        couch_config:get("couchdb", "file_preallocation_size", "1048576")),
+    case couch_file:open(FileName, [{file_prealloc_size, FilePreallocSize}]) of
+    {ok, _Fd} = Ok ->
+        Ok;
+    {error, enoent} ->
+        couch_file:open(
+            FileName, [create, {file_prealloc_size, FilePreallocSize}]);
+    Error ->
+        Error
     end.
 
 open_temp_group(DbName, Language, DesignOptions, MapSrc, RedSrc) ->
