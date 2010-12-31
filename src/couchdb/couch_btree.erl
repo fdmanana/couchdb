@@ -326,14 +326,16 @@ write_node(Bt, NodeType, NodeList) ->
     % split up nodes into smaller sizes
     NodeListList = chunkify(NodeList),
     % now write out each chunk and return the KeyPointer pairs for those nodes
+    {ok, NodePointers} = couch_file:append_binaries(
+        Bt#btree.fd,
+        [term_to_binary({NodeType, ANodeList}) || ANodeList <- NodeListList]),
     ResultList = [
         begin
-            {ok, Pointer} = couch_file:append_term(Bt#btree.fd, {NodeType, ANodeList}),
             {LastKey, _} = lists:last(ANodeList),
             {LastKey, {Pointer, reduce_node(Bt, NodeType, ANodeList)}}
         end
     ||
-        ANodeList <- NodeListList
+        {ANodeList, Pointer} <- lists:zip(NodeListList, NodePointers)
     ],
     {ok, ResultList, Bt}.
 

@@ -25,6 +25,7 @@
 -export([open/1, open/2, close/1, bytes/1, sync/1, truncate/2]).
 -export([pread_term/2, pread_iolist/2, pread_binary/2]).
 -export([append_binary/2, append_binary_md5/2]).
+-export([append_binaries/2, append_binaries_md5/2]).
 -export([append_term/2, append_term_md5/2]).
 -export([write_header/2, read_header/1]).
 -export([delete/2, delete/3, init_delete_dir/1]).
@@ -32,6 +33,33 @@
 % gen_server callbacks
 -export([init/1, terminate/2, code_change/3]).
 -export([handle_call/3, handle_cast/2, handle_info/2]).
+
+-export([test/2]).
+
+test(BinSize, NumBins) ->
+    Bins = [crypto:rand_bytes(BinSize) || _ <- lists:seq(1, NumBins)],
+    test_multi_writes(Bins),
+    test_batch_write(Bins).
+
+test_multi_writes(Bins) ->
+    {ok, F} = open("foo", [create, overwrite]),
+    T0 = erlang:now(),
+    [{ok, _} = append_binary_md5(F, Bin) || Bin <- Bins],
+    T1 = erlang:now(),
+    Diff = timer:now_diff(T1, T0),
+    close(F),
+    io:format("multi writes of ~p binaries, each of size ~p bytes, took ~pus~n",
+        [length(Bins), byte_size(hd(Bins)), Diff]).
+
+test_batch_write(Bins) ->
+    {ok, F} = open("bar", [create, overwrite]),
+    T0 = erlang:now(),
+    {ok, _} = append_binaries_md5(F, Bins),
+    T1 = erlang:now(),
+    Diff = timer:now_diff(T1, T0),
+    close(F),
+    io:format("batch write of ~p binaries, each of size ~p bytes,  took ~pus~n",
+        [length(Bins), byte_size(hd(Bins)), Diff]).
 
 %%----------------------------------------------------------------------
 %% Args:   Valid Options are [create] and [create,overwrite].
@@ -96,6 +124,25 @@ append_binary_md5(Fd, Bin) ->
     gen_server:call(Fd, {append_bin,
             [<<1:1/integer,Size:31/integer>>, couch_util:md5(Bin), Bin]}, infinity).
 
+append_binaries(Fd, BinList) ->
+    BinList2 = [[<<0:1/integer, (iolist_size(Bin)):31/integer>>, Bin]
+        || Bin <- BinList],
+    case gen_server:call(Fd, {append_bin_list, BinList2}, infinity) of
+    {ok, RevPosList} ->
+        {ok, lists:reverse(RevPosList)};
+    Error ->
+        Error
+    end.
+
+append_binaries_md5(Fd, BinList) ->
+    BinList2 = [[<<1:1/integer, (iolist_size(Bin)):31/integer>>,
+        couch_util:md5(Bin), Bin] || Bin <- BinList],
+    case gen_server:call(Fd, {append_bin_list, BinList2}, infinity) of
+    {ok, RevPosList} ->
+        {ok, lists:reverse(RevPosList)};
+    Error ->
+        Error
+    end.
 
 %%----------------------------------------------------------------------
 %% Purpose: Reads a term from a file that was written with append_term
@@ -331,6 +378,23 @@ handle_call({append_bin, Bin}, _From, #file{fd = Fd} = File) ->
     case file:write(Fd, Blocks) of
     ok ->
         {reply, {ok, Pos}, File};
+    Error ->
+        {reply, Error, File}
+    end;
+
+handle_call({append_bin_list, BinList}, _From, #file{fd = Fd} = File) ->
+    {ok, Pos} = file:position(Fd, eof),
+    {_, PosList, BlockList} = lists:foldl(
+        fun(Bin, {Eof, PosAcc, BinAcc}) ->
+            Blocks = make_blocks(Eof rem ?SIZE_BLOCK, Bin),
+            NextEof = Eof + iolist_size(Blocks),
+            {NextEof, [Eof | PosAcc], [Blocks | BinAcc]}
+        end,
+        {Pos, [], []},
+        BinList),
+    case file:write(Fd, lists:reverse(BlockList)) of
+    ok ->
+        {reply, {ok, PosList}, File};
     Error ->
         {reply, Error, File}
     end;
