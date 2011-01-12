@@ -393,7 +393,7 @@ handle_call({append_bin, Bin}, _From, #file{fd = Fd, eof = Pos} = File) ->
 
 handle_call({append_bin_list, BinList}, _From,
     #file{fd = Fd, eof = Pos} = File) ->
-    {FinalEof, PosList, BlockList1} = lists:foldl(
+    {FinalEof, PosList, BlockList} = lists:foldl(
         fun(Bin, {Eof, PosAcc, BinAcc}) ->
             Blocks = make_blocks(Eof rem ?SIZE_BLOCK, Bin),
             NextEof = Eof + iolist_size(Blocks),
@@ -401,8 +401,7 @@ handle_call({append_bin_list, BinList}, _From,
         end,
         {Pos, [], []},
         BinList),
-    BlockList = lists:reverse(BlockList1),
-    case file:write(Fd, BlockList) of
+    case file:write(Fd, lists:reverse(BlockList)) of
     ok ->
         {reply, {ok, PosList}, File#file{eof = FinalEof}};
     Error ->
