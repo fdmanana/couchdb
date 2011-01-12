@@ -57,8 +57,6 @@ start_link(Name, Options) ->
     % will restart us and then we will pick up the new settings.
 
     BindAddress = couch_config:get("httpd", "bind_address", any),
-    NoDelay = "true" == couch_config:get("httpd", "nodelay", "false"),
-
     DefaultSpec = "{couch_httpd_db, handle_request}",
     DefaultFun = make_arity_1_fun(
         couch_config:get("httpd", "default_handler", DefaultSpec)
@@ -82,7 +80,17 @@ start_link(Name, Options) ->
     UrlHandlers = dict:from_list(UrlHandlersList),
     DbUrlHandlers = dict:from_list(DbUrlHandlersList),
     DesignUrlHandlers = dict:from_list(DesignUrlHandlersList),
+    {ok, ServerOptions} = couch_util:parse_term(
+        couch_config:get("httpd", "server_options", "[]")),
+    {ok, SocketOptions} = couch_util:parse_term(
+        couch_config:get("httpd", "socket_options", "[]")),
     Loop = fun(Req)->
+        case SocketOptions of
+        [] ->
+            ok;
+        _ ->
+            ok = mochiweb_socket:setopts(Req:get(socket), SocketOptions)
+        end,
         apply(?MODULE, handle_request, [
             Req, DefaultFun, UrlHandlers, DbUrlHandlers, DesignUrlHandlers
         ])
@@ -90,11 +98,10 @@ start_link(Name, Options) ->
 
     % and off we go
 
-    {ok, Pid} = case mochiweb_http:start(Options ++ [
+    {ok, Pid} = case mochiweb_http:start(Options ++ ServerOptions ++ [
         {loop, Loop},
         {name, Name},
-        {ip, BindAddress},
-        {nodelay,NoDelay}
+        {ip, BindAddress}
     ]) of
     {ok, MochiPid} -> {ok, MochiPid};
     {error, Reason} ->
@@ -107,9 +114,11 @@ start_link(Name, Options) ->
             ?MODULE:stop();
         ("httpd", "port") ->
             ?MODULE:stop();
-        ("httpd", "max_connections") ->
-            ?MODULE:stop();
         ("httpd", "default_handler") ->
+            ?MODULE:stop();
+        ("httpd", "server_options") ->
+            ?MODULE:stop();
+        ("httpd", "socket_options") ->
             ?MODULE:stop();
         ("httpd_global_handlers", _) ->
             ?MODULE:stop();
@@ -226,7 +235,7 @@ handle_request_int(MochiReq, DefaultFun,
 
     % alias HEAD to GET as mochiweb takes care of stripping the body
     Method = case Method2 of
-            'HEAD' -> 'GET';
+        'HEAD' -> 'GET';
         Other -> Other
     end,
 
@@ -234,10 +243,9 @@ handle_request_int(MochiReq, DefaultFun,
         mochi_req = MochiReq,
         peer = MochiReq:get(peer),
         method = Method,
-        requested_path_parts = [list_to_binary(couch_httpd:unquote(Part))
-                || Part <- string:tokens(RequestedPath, "/")],
-        path_parts = [list_to_binary(couch_httpd:unquote(Part))
-                || Part <- string:tokens(Path, "/")],
+        requested_path_parts =
+            [?l2b(unquote(Part)) || Part <- string:tokens(RequestedPath, "/")],
+        path_parts = [?l2b(unquote(Part)) || Part <- string:tokens(Path, "/")],
         db_url_handlers = DbUrlHandlers,
         design_url_handlers = DesignUrlHandlers,
         default_fun = DefaultFun,
@@ -332,7 +340,7 @@ validate_referer(Req) ->
     end.
 
 validate_ctype(Req, Ctype) ->
-    case couch_httpd:header_value(Req, "Content-Type") of
+    case header_value(Req, "Content-Type") of
     undefined ->
         throw({bad_ctype, "Content-Type must be "++Ctype});
     ReqCtype ->
@@ -488,21 +496,21 @@ doc_etag(#doc{revs={Start, [DiskRev|_]}}) ->
 
 make_etag(Term) ->
     <<SigInt:128/integer>> = couch_util:md5(term_to_binary(Term)),
-    list_to_binary("\"" ++ lists:flatten(io_lib:format("~.36B",[SigInt])) ++ "\"").
+    iolist_to_binary([$", io_lib:format("~.36B", [SigInt]), $"]).
 
 etag_match(Req, CurrentEtag) when is_binary(CurrentEtag) ->
     etag_match(Req, binary_to_list(CurrentEtag));
 
 etag_match(Req, CurrentEtag) ->
     EtagsToMatch = string:tokens(
-        couch_httpd:header_value(Req, "If-None-Match", ""), ", "),
+        header_value(Req, "If-None-Match", ""), ", "),
     lists:member(CurrentEtag, EtagsToMatch).
 
 etag_respond(Req, CurrentEtag, RespFun) ->
     case etag_match(Req, CurrentEtag) of
     true ->
         % the client has this in their cache.
-        couch_httpd:send_response(Req, 304, [{"Etag", CurrentEtag}], <<>>);
+        send_response(Req, 304, [{"Etag", CurrentEtag}], <<>>);
     false ->
         % Run the function.
         RespFun()
@@ -821,8 +829,7 @@ send_chunked_error(Resp, Error) ->
     last_chunk(Resp).
 
 send_redirect(Req, Path) ->
-     Headers = [{"Location", couch_httpd:absolute_uri(Req, Path)}],
-     send_response(Req, 301, Headers, <<>>).
+     send_response(Req, 301, [{"Location", absolute_uri(Req, Path)}], <<>>).
 
 negotiate_content_type(#httpd{mochi_req=MochiReq}) ->
     %% Determine the appropriate Content-Type header for a JSON response
@@ -855,13 +862,13 @@ parse_multipart_request(ContentType, DataFun, Callback) ->
             data_fun=DataFun,
             callback=Callback},
     {Mp2, _NilCallback} = read_until(Mp, <<"--", Boundary0/binary>>,
-        fun(Next)-> nil_callback(Next) end),
+        fun nil_callback/1),
     #mp{buffer=Buffer, data_fun=DataFun2, callback=Callback2} =
             parse_part_header(Mp2),
     {Buffer, DataFun2, Callback2}.
 
 nil_callback(_Data)->
-    fun(Next) -> nil_callback(Next) end.
+    fun nil_callback/1.
 
 get_boundary({"multipart/" ++ _, Opts}) ->
     case couch_util:get_value("boundary", Opts) of
