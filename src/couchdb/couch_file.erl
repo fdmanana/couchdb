@@ -16,10 +16,12 @@
 -include("couch_db.hrl").
 
 -define(SIZE_BLOCK, 4096).
+-define(MAX_READ_BATCH_SIZE, 8).
 
 -record(file, {
     fd,
-    eof = 0
+    eof = 0,
+    read_only = false
 }).
 
 % public API
@@ -254,14 +256,18 @@ init({Filepath, Options, ReturnPid, Ref}) ->
                     ok = file:truncate(Fd),
                     ok = file:sync(Fd),
                     maybe_track_open_os_files(Options),
-                    {ok, #file{fd=Fd}};
+                    {ok, #file{
+                        fd = Fd,
+                        read_only = lists:member(read_only, Options)}};
                 false ->
                     ok = file:close(Fd),
                     init_status_error(ReturnPid, Ref, file_exists)
                 end;
             false ->
                 maybe_track_open_os_files(Options),
-                {ok, #file{fd=Fd}}
+                {ok, #file{
+                    fd = Fd,
+                    read_only = lists:member(read_only, Options)}}
             end;
         Error ->
             init_status_error(ReturnPid, Ref, Error)
@@ -274,7 +280,10 @@ init({Filepath, Options, ReturnPid, Ref}) ->
             ok = file:close(Fd_Read),
             maybe_track_open_os_files(Options),
             {ok, Eof} = file:position(Fd, eof),
-            {ok, #file{fd=Fd, eof=Eof}};
+            {ok, #file{
+                fd = Fd,
+                eof = Eof,
+                read_only = lists:member(read_only, Options)}};
         Error ->
             init_status_error(ReturnPid, Ref, Error)
         end
@@ -300,23 +309,39 @@ terminate(_Reason, #file{fd = Fd}) ->
     ok = file:close(Fd).
 
 
-handle_call({pread_iolist, Pos}, _From, File) ->
-    {RawData, NextPos} = try
-        % up to 8Kbs of read ahead
-        read_raw_iolist_int(File, Pos, 2 * ?SIZE_BLOCK - (Pos rem ?SIZE_BLOCK))
-    catch
-    _:_ ->
-        read_raw_iolist_int(File, Pos, 4)
-    end,
-    <<Prefix:1/integer, Len:31/integer, RestRawData/binary>> =
-        iolist_to_binary(RawData),
-    case Prefix of
-    1 ->
-        {Md5, IoList} = extract_md5(
-            maybe_read_more_iolist(RestRawData, 16 + Len, NextPos, File)),
+handle_call({pread_iolist, Pos}, From, #file{read_only = true, fd = Fd} = File) ->
+    {LenPosList, FromList} = collect_pread_iolist_calls(Pos, From),
+    Prefixes = read_raw_iolists_int(Fd, LenPosList),
+    {Types, IoListLocs} = lists:foldl(
+        fun({Prefix, IoListPos}, {AccTypes, AccLoc}) ->
+            case iolist_to_binary(Prefix) of
+            <<0:1/integer, Len:31/integer>> ->
+                {[raw | AccTypes], [{IoListPos, Len} | AccLoc]};
+            <<1:1/integer, Len:31/integer>> ->
+                {[md5 | AccTypes], [{IoListPos, 16 + Len} | AccLoc]}
+            end
+        end,
+        {[], []}, Prefixes),
+    IoLists = read_raw_iolists_int(Fd, lists:reverse(IoListLocs)),
+    lists:foreach(
+        fun({raw, {IoList, _}, F}) ->
+                gen_server:reply(F, {ok, IoList, <<>>});
+            ({md5, {Md5AndIoList, _}, F}) ->
+                {Md5, IoList} = extract_md5(Md5AndIoList),
+                gen_server:reply(F, {ok, IoList, Md5})
+        end,
+        lists:zip3(lists:reverse(Types), IoLists, FromList)),
+    {noreply, File};
+
+handle_call({pread_iolist, Pos}, _From, #file{fd = Fd} = File) ->
+    {Prefix, NextPos} = read_raw_iolist_int(Fd, Pos, 4),
+    case iolist_to_binary(Prefix) of
+    <<1:1/integer, Len:31/integer>> ->
+        {Md5AndIoList, _} = read_raw_iolist_int(Fd, NextPos, 16 + Len),
+        {Md5, IoList} = extract_md5(Md5AndIoList),
         {reply, {ok, IoList, Md5}, File};
-    0 ->
-        IoList = maybe_read_more_iolist(RestRawData, Len, NextPos, File),
+    <<0:1/integer, Len:31/integer>> ->
+        {IoList, _} = read_raw_iolist_int(Fd, NextPos, Len),
         {reply, {ok, IoList, <<>>}, File}
     end;
 
@@ -403,24 +428,30 @@ load_header(Fd, Block) ->
     Md5Sig = couch_util:md5(HeaderBin),
     {ok, HeaderBin}.
 
-maybe_read_more_iolist(Buffer, DataSize, _, _)
-    when DataSize =< byte_size(Buffer) ->
-    <<Data:DataSize/binary, _/binary>> = Buffer,
-    [Data];
-maybe_read_more_iolist(Buffer, DataSize, NextPos, File) ->
-    {Missing, _} =
-        read_raw_iolist_int(File, NextPos, DataSize - byte_size(Buffer)),
-    [Buffer, Missing].
-
 -spec read_raw_iolist_int(#file{}, Pos::non_neg_integer(), Len::non_neg_integer()) ->
     {Data::iolist(), CurPos::non_neg_integer()}.
 read_raw_iolist_int(Fd, {Pos, _Size}, Len) -> % 0110 UPGRADE CODE
     read_raw_iolist_int(Fd, Pos, Len);
-read_raw_iolist_int(#file{fd = Fd}, Pos, Len) ->
+read_raw_iolist_int(Fd, Pos, Len) ->
     BlockOffset = Pos rem ?SIZE_BLOCK,
     TotalBytes = calculate_total_read_len(BlockOffset, Len),
     {ok, <<RawBin:TotalBytes/binary>>} = file:pread(Fd, Pos, TotalBytes),
     {remove_block_prefixes(BlockOffset, RawBin), Pos + TotalBytes}.
+
+read_raw_iolists_int(Fd, PosLens) ->
+    {Locs, Offsets} = lists:foldl(
+        fun({Pos, Len}, {Locs, Offs}) ->
+            BlockOffset = Pos rem ?SIZE_BLOCK,
+            TotalBytes = calculate_total_read_len(BlockOffset, Len),
+            {[{Pos, TotalBytes} | Locs], [BlockOffset | Offs]}
+        end,
+        {[], []}, PosLens),
+    {ok, DataL} = file:pread(Fd, Locs),
+    lists:reverse(lists:map(
+        fun({RawBin, {Pos, TotalBytes}, Offset}) ->
+            {remove_block_prefixes(Offset, RawBin), Pos + TotalBytes}
+        end,
+        lists:zip3(DataL, Locs, Offsets))).
 
 -spec extract_md5(iolist()) -> {binary(), iolist()}.
 extract_md5(FullIoList) ->
@@ -488,3 +519,23 @@ split_iolist([Sublist| Rest], SplitAt, BeginAcc) when is_list(Sublist) ->
     end;
 split_iolist([Byte | Rest], SplitAt, BeginAcc) when is_integer(Byte) ->
     split_iolist(Rest, SplitAt - 1, [Byte | BeginAcc]).
+
+
+collect_pread_iolist_calls(FirstPos, FirstFrom) ->
+    collect_pread_iolist_calls(
+        ?MAX_READ_BATCH_SIZE, [{FirstPos, 4}], [FirstFrom]).
+
+collect_pread_iolist_calls(0, PosAcc, FromAcc) ->
+    {lists:reverse(PosAcc), lists:reverse(FromAcc)};
+collect_pread_iolist_calls(Max, PosAcc, FromAcc) ->
+    receive
+    {'$gen_call', From, {pread_iolist, {Pos, _Size}}} ->
+        % 1.1.0 upgrade code. Introduced with the HTTP ranges feature.
+        collect_pread_iolist_calls(
+            Max - 1, [{Pos, 4} | PosAcc], [From | FromAcc]);
+    {'$gen_call', From, {pread_iolist, Pos}} ->
+        collect_pread_iolist_calls(
+            Max - 1, [{Pos, 4} | PosAcc], [From | FromAcc])
+    after 0 ->
+        {lists:reverse(PosAcc), lists:reverse(FromAcc)}
+    end.
