@@ -41,7 +41,9 @@ set_options(Bt, [{join, Assemble}|Rest]) ->
 set_options(Bt, [{less, Less}|Rest]) ->
     set_options(Bt#btree{less=Less}, Rest);
 set_options(Bt, [{reduce, Reduce}|Rest]) ->
-    set_options(Bt#btree{reduce=Reduce}, Rest).
+    set_options(Bt#btree{reduce=Reduce}, Rest);
+set_options(Bt, [{cache, Cache}|Rest]) ->
+    set_options(Bt#btree{cache=Cache}, Rest).
 
 open(State, Fd, Options) ->
     {ok, set_options(#btree{root=State, fd=Fd}, Options)}.
@@ -181,7 +183,20 @@ query_modify(Bt, LookupKeys, InsertValues, RemoveKeys) ->
     Actions = lists:sort(SortFun, lists:append([InsertActions, RemoveActions, FetchActions])),
     {ok, KeyPointers, QueryResults, Bt2} = modify_node(Bt, Root, Actions, []),
     {ok, NewRoot, Bt3} = complete_root(Bt2, KeyPointers),
+    update_cache(Bt, InsertValues, RemoveKeys),
     {ok, QueryResults, Bt3#btree{root=NewRoot}}.
+
+update_cache(#btree{cache = nil}, _InsertValues, _RemoveKeys) ->
+    ok;
+update_cache(#btree{cache = Cache} = Bt, InsertValues, RemoveKeys) ->
+    lists:foreach(
+        fun(KV) ->
+            {K, _} = extract(Bt, KV),
+            term_cache_dict:update(Cache, K, KV)
+        end,
+        InsertValues),
+    lists:foreach(
+        fun(K) -> term_cache_dict:update(Cache, K, not_found) end, RemoveKeys).
 
 % for ordering different operations with the same key.
 % fetch < remove < insert
@@ -189,13 +204,54 @@ op_order(fetch) -> 1;
 op_order(remove) -> 2;
 op_order(insert) -> 3.
 
-lookup(#btree{root=Root, less=Less}=Bt, Keys) ->
+
+lookup(#btree{cache=nil, root=Root, less=Less}=Bt, Keys) ->
     SortedKeys = lists:sort(Less, Keys),
     {ok, SortedResults} = lookup(Bt, Root, SortedKeys),
     % We want to return the results in the same order as the keys were input
     % but we may have changed the order when we sorted. So we need to put the
     % order back into the results.
-    couch_util:reorder_results(Keys, SortedResults).
+    couch_util:reorder_results(Keys, SortedResults);
+
+lookup(#btree{cache=Cache, root=Root, less=Less}=Bt, Keys) ->
+    {PartialResults1, KeysToLookup1} = lists:foldl(
+        fun(K, {PartAcc, LookupAcc}) ->
+            case term_cache_dict:get(Cache, K) of
+            not_found ->
+                {[stub | PartAcc], [K | LookupAcc]};
+            {ok, not_found} ->
+                {[not_found | PartAcc], LookupAcc};
+            {ok, V} ->
+                {[{ok, V} | PartAcc], LookupAcc}
+            end
+        end,
+        {[], []}, Keys),
+    PartialResults = lists:reverse(PartialResults1),
+    KeysToLookup = lists:reverse(KeysToLookup1),
+    io:format("keys found in cache: ~p, keys not found in cache: ~p~n",
+         [[K || {K, V} <- lists:zip(Keys, PartialResults), V =/= stub], KeysToLookup]),
+         % [length(Keys) - length(KeysToLookup), length(KeysToLookup)]),
+    SortedKeys = lists:sort(Less, KeysToLookup),
+    {ok, SortedResults} = lookup(Bt, Root, SortedKeys),
+    lists:foreach(
+        fun({K, not_found}) ->
+                term_cache_dict:put(Cache, K, not_found);
+            ({K, {ok, V}}) ->
+                term_cache_dict:put(Cache, K, V)
+        end,
+        SortedResults),
+    % We want to return the results in the same order as the keys were input
+    % but we may have changed the order when we sorted. So we need to put the
+    % order back into the results.
+    ValuesFound = couch_util:reorder_results(KeysToLookup, SortedResults),
+    add_missing_values(PartialResults, ValuesFound, []).
+
+add_missing_values([], [], Acc) ->
+    lists:reverse(Acc);
+add_missing_values([stub | Rest], [V | RestFound], Acc) ->
+    add_missing_values(Rest, RestFound, [V | Acc]);
+add_missing_values([V | Rest], Found, Acc) ->
+    add_missing_values(Rest, Found, [V | Acc]).
 
 lookup(_Bt, nil, Keys) ->
     {ok, [{Key, not_found} || Key <- Keys]};

@@ -302,5 +302,6 @@
     extract_kv = fun({_Key, _Value} = KV) -> KV end,
     assemble_kv = fun(Key, Value) -> {Key, Value} end,
     less = fun(A, B) -> A < B end,
-    reduce = nil
+    reduce = nil,
+    cache = nil
 }).

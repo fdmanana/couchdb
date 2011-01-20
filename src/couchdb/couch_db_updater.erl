@@ -377,10 +377,13 @@ init_db(DbName, Filepath, Fd, ReaderFd, Header0, Options) ->
     _ -> ok
     end,
 
+    {ok, IdBtreeCache} = term_cache_dict:start_link(
+        [{policy, lru}, {size, "8Mb"}]),
     {ok, IdBtree} = couch_btree:open(Header#db_header.fulldocinfo_by_id_btree_state, Fd,
         [{split, fun(X) -> btree_by_id_split(X) end},
         {join, fun(X,Y) -> btree_by_id_join(X,Y) end},
-        {reduce, fun(X,Y) -> btree_by_id_reduce(X,Y) end}]),
+        {reduce, fun(X,Y) -> btree_by_id_reduce(X,Y) end},
+        {cache, IdBtreeCache}]),
     {ok, SeqBtree} = couch_btree:open(Header#db_header.docinfo_by_seq_btree_state, Fd,
             [{split, fun(X) -> btree_by_seq_split(X) end},
             {join, fun(X,Y) -> btree_by_seq_join(X,Y) end},
@@ -429,7 +432,9 @@ open_reader_fd(Filepath, Options) ->
     unlink(Fd),
     Fd.
 
-close_db(#db{fd_ref_counter = RefCntr}) ->
+close_db(#db{fd_ref_counter = RefCntr,
+    fulldocinfo_by_id_btree = #btree{cache = Cache}}) ->
+    ok = term_cache_dict:stop(Cache),
     couch_ref_counter:drop(RefCntr).
 
 
