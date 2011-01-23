@@ -21,6 +21,8 @@
 
 -define(DOC_ID_TO_REP_ID, rep_doc_id_to_rep_id).
 -define(REP_ID_TO_DOC_ID, rep_id_to_rep_doc_id).
+-define(MAX_RETRIES, 10).
+-define(INITIAL_WAIT, 5).
 
 -import(couch_replicator_utils, [
     parse_rep_doc/2,
@@ -34,7 +36,8 @@
 -record(state, {
     changes_feed_loop = nil,
     db_notifier = nil,
-    rep_db_name = nil
+    rep_db_name = nil,
+    rep_start_pids = []
 }).
 
 
@@ -61,6 +64,24 @@ init(_) ->
 
 handle_call({rep_db_update, Change}, _From, State) ->
     {reply, ok, process_update(State, Change)};
+
+handle_call({triggered, {BaseId, _}}, _From, State) ->
+    _Updated = ets:update_element(?REP_ID_TO_DOC_ID, BaseId, {2, false}),
+    {reply, ok, State};
+
+handle_call({restart_failure, Rep, Error}, _From, State) ->
+    #rep{id = {BaseId, _} = RepId, doc = {Props} = Doc} = Rep,
+    DocId = get_value(<<"_id">>, Props),
+    ?LOG_ERROR("Failed to start replication `s` after ~p attempts using "
+        "the document `~s`. Last error reason was: ~p",
+        [pp_rep_id(RepId), ?MAX_RETRIES, DocId, Error]),
+    update_rep_doc(
+        Doc,
+        [{<<"_replication_state">>, <<"error">>},
+            {<<"_replication_id">>, ?l2b(BaseId)}]),
+    true = ets:delete(?REP_ID_TO_DOC_ID, BaseId),
+    true = ets:delete(?DOC_ID_TO_REP_ID, DocId),
+    {reply, ok, State};
 
 handle_call(Msg, From, State) ->
     ?LOG_ERROR("Replicator DB listener received unexpected call ~p from ~p",
@@ -95,14 +116,28 @@ handle_info({'EXIT', From, Reason}, #state{db_notifier = From} = State) ->
     ?LOG_ERROR("Database update notifier died. Reason: ~p", [Reason]),
     {stop, {db_update_notifier_died, Reason}, State};
 
+handle_info({'EXIT', From, normal}, #state{rep_start_pids = Pids} = State) ->
+    % one of the replication retry processes terminated successfully
+    {noreply, State#state{rep_start_pids = Pids -- [From]}};
+
 handle_info(Msg, State) ->
     ?LOG_ERROR("Replicator DB listener received unexpected message ~p", [Msg]),
     {stop, {unexpected_msg, Msg}, State}.
 
 
-terminate(_Reason, #state{changes_feed_loop = Loop, db_notifier = Notifier}) ->
+terminate(_Reason, State) ->
+    #state{
+        rep_start_pids = StartPids,
+        changes_feed_loop = Loop,
+        db_notifier = Notifier
+    } = State,
     stop_all_replications(),
-    exit(Loop, stop),
+    lists:foreach(
+        fun(Pid) ->
+            catch unlink(Pid),
+            catch exit(Pid, stop)
+        end,
+        [Loop | StartPids]),
     true = ets:delete(?REP_ID_TO_DOC_ID),
     true = ets:delete(?DOC_ID_TO_REP_ID),
     couch_db_update_notifier:stop(Notifier).
@@ -173,14 +208,19 @@ db_update_notifier() ->
     Notifier.
 
 
-restart(#state{changes_feed_loop = Loop} = State) ->
-    catch unlink(Loop),
-    catch exit(Loop, rep_db_changed),
+restart(#state{changes_feed_loop = Loop, rep_start_pids = StartPids} = State) ->
     stop_all_replications(),
+    lists:foreach(
+        fun(Pid) ->
+            catch unlink(Pid),
+            catch exit(Pid, rep_db_changed)
+        end,
+        [Loop | StartPids]),
     {NewLoop, NewRepDbName} = changes_feed_loop(),
     State#state{
         changes_feed_loop = NewLoop,
-        rep_db_name = NewRepDbName
+        rep_db_name = NewRepDbName,
+        rep_start_pids = []
     }.
 
 
@@ -189,17 +229,20 @@ process_update(State, {Change}) ->
     DocId = get_value(<<"_id">>, RepProps),
     case get_value(<<"deleted">>, Change, false) of
     true ->
-        rep_doc_deleted(DocId);
+        rep_doc_deleted(DocId),
+        State;
     false ->
         case get_value(<<"_replication_state">>, RepProps) of
         <<"completed">> ->
-            replication_complete(DocId);
+            replication_complete(DocId),
+            State;
         <<"error">> ->
-            stop_replication(DocId);
+            stop_replication(DocId),
+            State;
         <<"triggered">> ->
-            maybe_start_replication(DocId, JsonRepDoc);
+            maybe_start_replication(State, DocId, JsonRepDoc);
         undefined ->
-            maybe_start_replication(DocId, JsonRepDoc)
+            maybe_start_replication(State, DocId, JsonRepDoc)
         end
     end,
     State.
@@ -217,55 +260,74 @@ rep_user_ctx({RepDoc}) ->
     end.
 
 
-maybe_start_replication(DocId, JsonRepDoc) ->
+maybe_start_replication(State, DocId, JsonRepDoc) ->
     UserCtx = rep_user_ctx(JsonRepDoc),
     {ok, #rep{id = {BaseId, _} = RepId} = Rep} =
         parse_rep_doc(JsonRepDoc, UserCtx),
     case ets:lookup(?REP_ID_TO_DOC_ID, BaseId) of
     [] ->
-        true = ets:insert(?REP_ID_TO_DOC_ID, {BaseId, DocId}),
+        true = ets:insert(?REP_ID_TO_DOC_ID, {BaseId, {DocId, false}}),
         true = ets:insert(?DOC_ID_TO_REP_ID, {DocId, RepId}),
-        start_replication(Rep);
+        Server = self(),
+        Pid = spawn_link(fun() -> start_replication(Server, Rep) end),
+        State#state{rep_start_pids = [Pid | State#state.rep_start_pids]};
     [{BaseId, DocId}] ->
-        ok;
-    [{BaseId, OtherDocId}] ->
-        maybe_tag_rep_doc(DocId, JsonRepDoc, ?l2b(BaseId), OtherDocId)
+        State;
+    [{BaseId, {OtherDocId, false}}] ->
+        ?LOG_INFO("The replication specified by the document `~s` was already"
+            " triggered by the document `~s`", [DocId, OtherDocId]),
+        maybe_tag_rep_doc(JsonRepDoc, ?l2b(BaseId)),
+        State;
+    [{BaseId, {OtherDocId, true}}] ->
+        ?LOG_INFO("The replication specified by the document `~s` is already"
+            " being triggered by the document `~s`", [DocId, OtherDocId]),
+        maybe_tag_rep_doc(JsonRepDoc, ?l2b(BaseId)),
+        State
     end.
 
 
-maybe_tag_rep_doc(DocId, {Props} = JsonRepDoc, RepId, OtherDocId) ->
+maybe_tag_rep_doc({Props} = JsonRepDoc, RepId) ->
     case get_value(<<"_replication_id">>, Props) of
     RepId ->
         ok;
     _ ->
-        ?LOG_INFO("The replication specified by the document `~s` was already"
-            " triggered by the document `~s`", [DocId, OtherDocId]),
         update_rep_doc(JsonRepDoc, [{<<"_replication_id">>, RepId}])
     end.
 
 
-start_replication(#rep{id = {Base, Ext}, doc = {RepProps} = RepDoc} = Rep) ->
+start_replication(Server, #rep{id = {Base, Ext}, doc = {RepProps}} = Rep) ->
     case (catch couch_replicator:async_replicate(Rep)) of
     {ok, _} ->
         ?LOG_INFO("Document `~s` triggered replication `~s`",
             [get_value(<<"_id">>, RepProps), Base ++ Ext]);
     Error ->
-        update_rep_doc(
-            RepDoc,
-            [
-                {<<"_replication_state">>, <<"error">>},
-                {<<"_replication_id">>, ?l2b(Base)}
-            ]
-        ),
-        ?LOG_ERROR("Error starting replication `~s`: ~p", [Base ++ Ext, Error])
+        keep_retrying(Server, Rep, Error, ?INITIAL_WAIT, ?MAX_RETRIES)
+    end.
+
+
+keep_retrying(Server, Rep, Error, _Wait, 0) ->
+    ok = gen_server:call(Server, {restart_failure, Rep, Error}, infinity);
+
+keep_retrying(Server, #rep{doc = {RepProps}} = Rep, Error, Wait, RetriesLeft) ->
+    ?LOG_ERROR("Error starting replication `~s`: ~p. "
+        "Retrying in ~p seconds", [pp_rep_id(Rep), Error, Wait]),
+    ok = timer:sleep(Wait * 1000),
+    case (catch couch_replicator:async_replicate(Rep)) of
+    {ok, _} ->
+        ok = gen_server:call(Server, {triggered, Rep#rep.id}, infinity),
+        ?LOG_INFO("Document `~s` triggered replication `~s` after ~p attempts",
+            [get_value(<<"_id">>, RepProps), pp_rep_id(Rep),
+                ?MAX_RETRIES - RetriesLeft + 1]);
+    NewError ->
+        keep_retrying(Server, Rep, NewError, Wait * 2, RetriesLeft - 1)
     end.
 
 
 rep_doc_deleted(DocId) ->
     case stop_replication(DocId) of
-    {ok, {Base, Ext}} ->
+    {ok, RepId} ->
         ?LOG_INFO("Stopped replication `~s` because replication document `~s`"
-            " was deleted", [Base ++ Ext, DocId]);
+            " was deleted", [pp_rep_id(RepId), DocId]);
     none ->
         ok
     end.
@@ -273,9 +335,9 @@ rep_doc_deleted(DocId) ->
 
 replication_complete(DocId) ->
     case stop_replication(DocId) of
-    {ok, {Base, Ext}} ->
+    {ok, RepId} ->
         ?LOG_INFO("Replication `~s` finished (triggered by document `~s`)",
-            [Base ++ Ext, DocId]);
+            [pp_rep_id(RepId), DocId]);
     none ->
         ok
     end.
@@ -301,3 +363,10 @@ stop_all_replications() ->
     ),
     true = ets:delete_all_objects(?REP_ID_TO_DOC_ID),
     true = ets:delete_all_objects(?DOC_ID_TO_REP_ID).
+
+
+% pretty-print replication id
+pp_rep_id(#rep{id = RepId}) ->
+    pp_rep_id(RepId);
+pp_rep_id({Base, Extension}) ->
+    Base ++ Extension.
