@@ -244,8 +244,7 @@ process_update(State, {Change}) ->
         undefined ->
             maybe_start_replication(State, DocId, JsonRepDoc)
         end
-    end,
-    State.
+    end.
 
 
 rep_user_ctx({RepDoc}) ->
