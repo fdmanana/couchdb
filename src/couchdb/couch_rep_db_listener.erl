@@ -77,7 +77,7 @@ handle_call({triggered, {BaseId, _}}, _From, State) ->
 handle_call({restart_failure, Rep, Error}, _From, State) ->
     #rep{id = {BaseId, _} = RepId, doc = {Props} = Doc} = Rep,
     DocId = get_value(<<"_id">>, Props),
-    ?LOG_ERROR("Failed to start replication `s` after ~p attempts using "
+    ?LOG_ERROR("Failed to start replication `~s` after ~p attempts using "
         "the document `~s`. Last error reason was: ~p",
         [pp_rep_id(RepId), ?MAX_RETRIES, DocId, Error]),
     update_rep_doc(
