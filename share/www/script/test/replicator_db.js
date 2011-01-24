@@ -814,7 +814,7 @@ couchTests.replicator_db = function(debug) {
  * repDb.deleteDb();
  * restartServer();
  * run_on_modified_server(server_config, error_state_replication);
-*/
+ */
 
 
   // cleanup
