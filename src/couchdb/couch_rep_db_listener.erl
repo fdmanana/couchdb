@@ -265,7 +265,7 @@ maybe_start_replication(State, DocId, JsonRepDoc) ->
         parse_rep_doc(JsonRepDoc, UserCtx),
     case ets:lookup(?REP_ID_TO_DOC_ID, BaseId) of
     [] ->
-        true = ets:insert(?REP_ID_TO_DOC_ID, {BaseId, {DocId, false}}),
+        true = ets:insert(?REP_ID_TO_DOC_ID, {BaseId, {DocId, true}}),
         true = ets:insert(?DOC_ID_TO_REP_ID, {DocId, RepId}),
         Server = self(),
         Pid = spawn_link(fun() -> start_replication(Server, Rep) end),
