@@ -66,7 +66,12 @@ handle_call({rep_db_update, Change}, _From, State) ->
     {reply, ok, process_update(State, Change)};
 
 handle_call({triggered, {BaseId, _}}, _From, State) ->
-    _Updated = ets:update_element(?REP_ID_TO_DOC_ID, BaseId, {2, false}),
+    case ets:lookup(?REP_ID_TO_DOC_ID, BaseId) of
+    [{BaseId, {DocId, true}}] ->
+        true = ets:insert(?REP_ID_TO_DOC_ID, {BaseId, {DocId, false}});
+    _ ->
+        ok
+    end,
     {reply, ok, State};
 
 handle_call({restart_failure, Rep, Error}, _From, State) ->
@@ -294,11 +299,12 @@ maybe_tag_rep_doc({Props} = JsonRepDoc, RepId) ->
     end.
 
 
-start_replication(Server, #rep{id = {Base, Ext}, doc = {RepProps}} = Rep) ->
+start_replication(Server, #rep{id = RepId, doc = {RepProps}} = Rep) ->
     case (catch couch_replicator:async_replicate(Rep)) of
     {ok, _} ->
+        ok = gen_server:call(Server, {triggered, RepId}, infinity),
         ?LOG_INFO("Document `~s` triggered replication `~s`",
-            [get_value(<<"_id">>, RepProps), Base ++ Ext]);
+            [get_value(<<"_id">>, RepProps), pp_rep_id(RepId)]);
     Error ->
         keep_retrying(Server, Rep, Error, ?INITIAL_WAIT, ?MAX_RETRIES)
     end.
