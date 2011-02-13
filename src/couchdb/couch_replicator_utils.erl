@@ -17,6 +17,7 @@
 -export([ensure_rep_db_exists/0]).
 -export([open_db/1, close_db/1]).
 -export([start_db_compaction_notifier/2, stop_db_compaction_notifier/1]).
+-export([replication_id/2]).
 
 -include("couch_db.hrl").
 -include("couch_api_wrap.hrl").
@@ -36,14 +37,13 @@ parse_rep_doc({Props} = RepObj, UserCtx) ->
     Source = parse_rep_db(get_value(<<"source">>, Props), ProxyParams, Options),
     Target = parse_rep_db(get_value(<<"target">>, Props), ProxyParams, Options),
     Rep = #rep{
-        id = make_replication_id(Source, Target, UserCtx, Options),
         source = Source,
         target = Target,
         options = Options,
         user_ctx = UserCtx,
         doc = RepObj
     },
-    {ok, Rep}.
+    {ok, Rep#rep{id = replication_id(Rep)}}.
 
 
 update_rep_doc({Props} = _RepDoc, KVs) ->
@@ -115,13 +115,32 @@ ensure_rep_ddoc_exists(RepDb, DDocID) ->
     ok.
 
 
-make_replication_id(Source, Target, UserCtx, Options) ->
-    %% funky algorithm to preserve backwards compatibility
+replication_id(#rep{options = Options} = Rep) ->
+    BaseId = replication_id(Rep, ?REP_ID_VERSION),
+    {BaseId, maybe_append_options([continuous, create_target], Options)}.
+
+
+% Versioned clauses for generating replication IDs.
+% If a change is made to how replications are identified,
+% please add a new clause and increase ?REP_ID_VERSION.
+
+replication_id(#rep{user_ctx = UserCtx} = Rep, 2) ->
     {ok, HostName} = inet:gethostname(),
-    % Port = mochiweb_socket_server:get(couch_httpd, port),
-    Src = get_rep_endpoint(UserCtx, Source),
-    Tgt = get_rep_endpoint(UserCtx, Target),
-    Base = [HostName, Src, Tgt] ++
+    Port = mochiweb_socket_server:get(couch_httpd, port),
+    Src = get_rep_endpoint(UserCtx, Rep#rep.source),
+    Tgt = get_rep_endpoint(UserCtx, Rep#rep.target),
+    maybe_append_filters([HostName, Port, Src, Tgt], Rep);
+
+replication_id(#rep{user_ctx = UserCtx} = Rep, 1) ->
+    {ok, HostName} = inet:gethostname(),
+    Src = get_rep_endpoint(UserCtx, Rep#rep.source),
+    Tgt = get_rep_endpoint(UserCtx, Rep#rep.target),
+    maybe_append_filters([HostName, Src, Tgt], Rep).
+
+
+maybe_append_filters(Base,
+        #rep{source = Source, user_ctx = UserCtx, options = Options}) ->
+    Base2 = Base ++
         case get_value(filter, Options) of
         undefined ->
             case get_value(doc_ids, Options) of
@@ -134,8 +153,7 @@ make_replication_id(Source, Target, UserCtx, Options) ->
             [filter_code(Filter, Source, UserCtx),
                 get_value(query_params, Options, {[]})]
         end,
-    Extension = maybe_append_options([continuous, create_target], Options),
-    {couch_util:to_hex(couch_util:md5(term_to_binary(Base))), Extension}.
+    couch_util:to_hex(couch_util:md5(term_to_binary(Base2))).
 
 
 filter_code(Filter, Source, UserCtx) ->

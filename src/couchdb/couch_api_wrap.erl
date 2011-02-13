@@ -190,7 +190,12 @@ open_doc(#httpdb{} = Db, Id, Options) ->
             {error, get_value(<<"error">>, Props)}
         end);
 open_doc(Db, Id, Options) ->
-    couch_db:open_doc(Db, Id, Options).
+    case couch_db:open_doc(Db, Id, Options) of
+    {ok, _} = Ok ->
+        Ok;
+    {not_found, _Reason} ->
+        {error, <<"not_found">>}
+    end.
 
 
 update_doc(Db, Doc, Options) ->

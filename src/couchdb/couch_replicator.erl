@@ -486,7 +486,6 @@ cancel_timer(#rep_state{timer = Timer} = State) ->
 
 init_state(Rep) ->
     #rep{
-        id = {BaseId, _Ext},
         source = Src, target = Tgt,
         options = Options, user_ctx = UserCtx
     } = Rep,
@@ -497,15 +496,8 @@ init_state(Rep) ->
     {ok, SourceInfo} = couch_api_wrap:get_db_info(Source),
     {ok, TargetInfo} = couch_api_wrap:get_db_info(Target),
 
-    DocId = ?l2b(?LOCAL_DOC_PREFIX ++ BaseId),
-    case couch_api_wrap:open_doc(Source, DocId, []) of
-    {ok, SourceLog} ->  SourceLog;
-    _ ->                SourceLog = #doc{id=DocId}
-    end,
-    case couch_api_wrap:open_doc(Target, DocId, []) of
-    {ok, TargetLog} ->  TargetLog;
-    _ ->                TargetLog = #doc{id=DocId}
-    end,
+    [SourceLog, TargetLog] = find_replication_logs([Source, Target], Rep),
+
     {StartSeq, History} = compare_replication_logs(SourceLog, TargetLog),
     #doc{body={CheckpointHistory}} = SourceLog,
     State = #rep_state{
@@ -533,6 +525,33 @@ init_state(Rep) ->
         target_monitor = db_monitor(Target)
     },
     State#rep_state{timer = start_timer(State)}.
+
+
+find_replication_logs(DbList, #rep{id = {BaseId, _}} = Rep) ->
+    LogId = ?l2b(?LOCAL_DOC_PREFIX ++ BaseId),
+    fold_replication_logs(DbList, ?REP_ID_VERSION, LogId, LogId, Rep, []).
+
+
+fold_replication_logs([], _Vsn, _LogId, _NewId, _Rep, Acc) ->
+    lists:reverse(Acc);
+
+fold_replication_logs([Db | Rest] = Dbs, Vsn, LogId, NewId, Rep, Acc) ->
+    case couch_api_wrap:open_doc(Db, LogId, []) of
+    {error, <<"not_found">>} when Vsn > 1 ->
+        OldRepId = couch_replicator_utils:replication_id(Rep, Vsn - 1),
+        fold_replication_logs(Dbs, Vsn - 1,
+            ?l2b(?LOCAL_DOC_PREFIX ++ OldRepId), NewId, Rep, Acc);
+    {error, <<"not_found">>} ->
+        fold_replication_logs(
+            Rest, ?REP_ID_VERSION, NewId, NewId, Rep, [#doc{id = NewId} | Acc]);
+    {ok, Doc} when LogId =:= NewId ->
+        fold_replication_logs(
+            Rest, ?REP_ID_VERSION, NewId, NewId, Rep, [Doc | Acc]);
+    {ok, Doc} ->
+        MigratedLog = #doc{id = NewId, body = Doc#doc.body},
+        fold_replication_logs(
+            Rest, ?REP_ID_VERSION, NewId, NewId, Rep, [MigratedLog | Acc])
+    end.
 
 
 spawn_changes_reader(StartSeq, Source, ChangesQueue, Options) ->
