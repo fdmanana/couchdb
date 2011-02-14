@@ -13,7 +13,7 @@
 -module(json_stream_parse).
 
 
--export([events/2,to_ejson/1,test_all/0,collect_object/2]).
+-export([events/2, to_ejson/1, collect_object/2]).
 
 -define(IS_WS(X), (X == $\  orelse X == $\t orelse X == $\n orelse X == $\r)).
 -define(IS_DELIM(X), (X == $} orelse X == $] orelse X == $,)).
