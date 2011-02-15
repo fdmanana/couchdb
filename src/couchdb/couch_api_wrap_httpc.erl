@@ -57,11 +57,11 @@ send_ibrowse_req(#httpdb{headers = BaseHeaders} = HttpDb, Params) ->
     Headers2 = oauth_header(HttpDb, Params) ++ Headers1,
     Url = full_url(HttpDb, Params),
     Body = get_value(body, Params, []),
-    {{_Type, WorkerPid} = Worker, InactivityTimeout} =
+    {_Type, WorkerPid} = Worker =
     case get_value(path, Params) of
     "_changes" ->
         {ok, Pid} = ibrowse:spawn_link_worker_process(Url),
-        {{ibrowse_direct, Pid}, infinity};
+        {ibrowse_direct, Pid};
     _ ->
         % Direct means no usage of HTTP pipeline. As section 8.1.2.2 of
         % RFC 2616 says, clients should not pipeline non-idempotent requests.
@@ -71,14 +71,14 @@ send_ibrowse_req(#httpdb{headers = BaseHeaders} = HttpDb, Params) ->
         case get_value(direct, Params, false) of
         true ->
             {ok, Pid} = couch_httpc_pool:get_worker(HttpDb#httpdb.httpc_pool),
-            {{direct, Pid}, HttpDb#httpdb.timeout};
+            {direct, Pid};
         false ->
             Pid = get_piped_worker(HttpDb),
-            {{piped, Pid}, HttpDb#httpdb.timeout}
+            {piped, Pid}
         end
     end,
     IbrowseOptions = [
-        {response_format, binary}, {inactivity_timeout, InactivityTimeout} |
+        {response_format, binary}, {inactivity_timeout, HttpDb#httpdb.timeout} |
         lists:ukeymerge(1, get_value(ibrowse_options, Params, []),
             HttpDb#httpdb.ibrowse_options)
     ],
