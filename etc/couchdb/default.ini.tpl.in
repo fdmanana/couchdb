@@ -140,7 +140,8 @@ max_replication_retry_count = 10
 ; More worker processes can give higher network throughput but can also
 ; imply more disk and network IO.
 worker_processes = 4
-; With lower batch sizes checkpoints are done more frequently.
+; With lower batch sizes checkpoints are done more frequently. Lower batch sizes
+; also reduce the total amount of used RAM memory.
 worker_batch_size = 1000
 ; Maximum number of HTTP connections and pipeline size (for each connection)
 ; per replication. These two settings have more impact on pull replications.
