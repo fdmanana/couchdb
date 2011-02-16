@@ -146,7 +146,7 @@ worker_batch_size = 1000
 ; Maximum number of HTTP connections and pipeline size (for each connection)
 ; per replication. These two settings have more impact on pull replications.
 http_connections = 20
-http_pipeline_size = 100
+http_pipeline_size = 50
 ; HTTP connection timeout per replication.
 ; Even for very fast/reliable networks it might need to be increased if a remote
 ; database is too busy.
