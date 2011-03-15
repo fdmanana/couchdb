@@ -429,7 +429,7 @@ stop_all_replications() ->
 update_rep_doc(RepDocId, KVs) ->
     {ok, RepDb} = ensure_rep_db_exists(),
     try
-        {ok, LatestRepDoc} = couch_db:open_doc(RepDb, RepDocId, []),
+        {ok, LatestRepDoc} = couch_db:open_doc(RepDb, RepDocId, [ejson_body]),
         update_rep_doc(RepDb, LatestRepDoc, KVs)
     catch throw:conflict ->
         % Shouldn't happen, as by default only the role _replicator can
@@ -478,7 +478,7 @@ ensure_rep_ddoc_exists(RepDb, DDocID) ->
     {ok, _Doc} ->
         ok;
     _ ->
-        DDoc = couch_doc:from_json_obj({[
+        DDoc = couch_doc:ejson_to_doc({[
             {<<"_id">>, DDocID},
             {<<"language">>, <<"javascript">>},
             {<<"validate_doc_update">>, ?REP_DB_DOC_VALIDATE_FUN}

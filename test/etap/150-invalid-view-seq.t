@@ -77,17 +77,17 @@ delete_db() ->
 
 create_docs() ->
     {ok, Db} = couch_db:open(test_db_name(), [admin_user_ctx()]),
-    Doc1 = couch_doc:from_json_obj({[
+    Doc1 = couch_doc:ejson_to_doc({[
         {<<"_id">>, <<"doc1">>},
         {<<"value">>, 1}
 
     ]}),
-    Doc2 = couch_doc:from_json_obj({[
+    Doc2 = couch_doc:ejson_to_doc({[
         {<<"_id">>, <<"doc2">>},
         {<<"value">>, 2}
 
     ]}),
-    Doc3 = couch_doc:from_json_obj({[
+    Doc3 = couch_doc:ejson_to_doc({[
         {<<"_id">>, <<"doc3">>},
         {<<"value">>, 3}
 
@@ -98,7 +98,7 @@ create_docs() ->
 
 create_design_doc() ->
     {ok, Db} = couch_db:open(test_db_name(), [admin_user_ctx()]),
-    DDoc = couch_doc:from_json_obj({[
+    DDoc = couch_doc:ejson_to_doc({[
         {<<"_id">>, <<"_design/foo">>},
         {<<"language">>, <<"javascript">>},
         {<<"views">>, {[
@@ -119,7 +119,7 @@ backup_db_file() ->
 
 create_new_doc() ->
     {ok, Db} = couch_db:open(test_db_name(), [admin_user_ctx()]),
-    Doc666 = couch_doc:from_json_obj({[
+    Doc666 = couch_doc:ejson_to_doc({[
         {<<"_id">>, <<"doc666">>},
         {<<"value">>, 999}
 

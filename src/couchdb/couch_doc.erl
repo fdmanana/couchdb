@@ -14,12 +14,16 @@
 
 -export([to_doc_info/1,to_doc_info_path/1,parse_rev/1,parse_revs/1,rev_to_str/1,revs_to_strs/1]).
 -export([att_foldl/3,range_att_foldl/5,att_foldl_decode/3,get_validate_doc_fun/1]).
--export([from_json_obj/1,to_json_obj/2,has_stubs/1, merge_stubs/2]).
+-export([has_stubs/1, merge_stubs/2]).
 -export([validate_docid/1]).
 -export([doc_from_multi_part_stream/2]).
 -export([doc_to_multi_part_stream/5, len_doc_to_multi_part_stream/4]).
 -export([to_path/1]).
 -export([mp_parse_doc/2]).
+-export([json_to_doc/1, ejson_to_doc/1]).
+-export([doc_to_json/1, doc_to_json/2]).
+-export([doc_to_ejson/1, doc_to_ejson/2]).
+-export([with_ejson_body/1, with_bin_body/1]).
 
 -include("couch_db.hrl").
 
@@ -34,16 +38,11 @@ to_branch(Doc, [RevId]) ->
 to_branch(Doc, [RevId | Rest]) ->
     [{RevId, ?REV_MISSING, to_branch(Doc, Rest)}].
 
-% helpers used by to_json_obj
+% helpers used by doc_to_json
 to_json_rev(0, []) ->
     [];
 to_json_rev(Start, [FirstRevId|_]) ->
     [{<<"_rev">>, ?l2b([integer_to_list(Start),"-",revid_to_str(FirstRevId)])}].
-
-to_json_body(true, {Body}) ->
-    Body ++ [{<<"_deleted">>, true}];
-to_json_body(false, {Body}) ->
-    Body.
 
 to_json_revisions(Options, Start, RevIds) ->
     case lists:member(revs, Options) of
@@ -131,22 +130,6 @@ to_json_attachments(Atts, OutputData, DataToFollow, ShowEncInfo) ->
             }}
         end, Atts),
     [{<<"_attachments">>, {AttProps}}].
-
-to_json_obj(#doc{id=Id,deleted=Del,body=Body,revs={Start, RevIds},
-            meta=Meta}=Doc,Options)->
-    {[{<<"_id">>, Id}]
-        ++ to_json_rev(Start, RevIds)
-        ++ to_json_body(Del, Body)
-        ++ to_json_revisions(Options, Start, RevIds)
-        ++ to_json_meta(Meta)
-        ++ to_json_attachments(Doc#doc.atts, Options)
-    }.
-
-from_json_obj({Props}) ->
-    transfer_fields(Props, #doc{body=[]});
-
-from_json_obj(_Other) ->
-    throw({bad_request, "Document must be a JSON object"}).
 
 parse_revid(RevId) when size(RevId) =:= 32 ->
     RevInt = erlang:list_to_integer(?b2l(RevId), 16),
@@ -481,7 +464,7 @@ doc_from_multi_part_stream(ContentType, DataFun) ->
     receive 
     {doc_bytes, DocBytes} ->
         erlang:put(mochiweb_request_recv, true),
-        Doc = from_json_obj(?JSON_DECODE(DocBytes)),
+        Doc = json_to_doc(DocBytes),
         % go through the attachments looking for 'follows' in the data,
         % replace with function that reads the data from MIME stream.
         ReadAttachmentDataFun = fun() ->
@@ -525,3 +508,59 @@ mp_parse_atts({body, Bytes}) ->
     fun mp_parse_atts/1;
 mp_parse_atts(body_end) ->
     fun mp_parse_atts/1.
+
+
+json_to_doc(Json) ->
+    try
+        ejson_to_doc(?JSON_DECODE(Json))
+    catch throw:{invalid_json, _} ->
+        % maybe it's EJSON and not a JSON IOList
+        ejson_to_doc(Json)
+    end.
+
+
+ejson_to_doc({Props}) ->
+    transfer_fields(Props, #doc{body = []});
+ejson_to_doc(_) ->
+    throw({bad_request, "Document must be a JSON object"}).
+
+
+doc_to_json(Doc) ->
+    doc_to_json(Doc, []).
+
+doc_to_json(Doc, Options) ->
+    ?JSON_ENCODE(doc_to_ejson(Doc, Options)).
+
+
+doc_to_ejson(Doc) ->
+    doc_to_ejson(Doc, []).
+
+doc_to_ejson(#doc{body = Body} = Doc, Options) when is_binary(Body) ->
+    doc_to_ejson(Doc#doc{body = binary_to_term(Body)}, Options);
+doc_to_ejson(#doc{id = Id, body = {Body}, revs = {Start, RevIds},
+        meta = Meta, atts = Atts, deleted = Del}, Options) ->
+    {
+        [{<<"_id">>, Id}]
+        ++ to_json_rev(Start, RevIds)
+        ++ case Del of
+            true -> [{<<"_deleted">>, true}];
+            _ -> []
+        end
+        ++ to_json_revisions(Options, Start, RevIds)
+        ++ to_json_meta(Meta)
+        ++ to_json_attachments(Atts, Options)
+        ++ Body
+    }.
+
+
+with_bin_body(#doc{body = Json} = Doc) when is_binary(Json) ->
+    Doc;
+with_bin_body(#doc{body = EJson} = Doc) ->
+    Doc#doc{body = term_to_binary(
+        EJson, [{compressed, 1}, {minor_version, 1}])}.
+
+
+with_ejson_body(#doc{body = Json} = Doc) when is_binary(Json) ->
+    Doc#doc{body = binary_to_term(Json)};
+with_ejson_body(Doc) ->
+    Doc.
