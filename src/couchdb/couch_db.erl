@@ -644,7 +644,10 @@ check_dup_atts2(_) ->
 
 
 update_docs(Db, Docs1, Options, replicated_changes) ->
-    Docs = [couch_doc:with_json_body(Doc) || Doc <- Docs1],
+    Docs = [begin
+                #doc{body = Body} = Doc1 = couch_doc:with_json_body(Doc),
+                Doc1#doc{body = zlib:zip(Body)} end
+        || Doc <- Docs1],
     increment_stat(Db, {couchdb, database_writes}),
     DocBuckets = group_alike_docs(Docs),
 
@@ -671,7 +674,10 @@ update_docs(Db, Docs1, Options, replicated_changes) ->
     {ok, DocErrors};
 
 update_docs(Db, Docs1, Options, interactive_edit) ->
-    Docs = [couch_doc:with_json_body(Doc) || Doc <- Docs1],
+    Docs = [begin
+                #doc{body = Body} = Doc1 = couch_doc:with_json_body(Doc),
+                Doc1#doc{body = zlib:zip(Body)} end
+        || Doc <- Docs1],
     increment_stat(Db, {couchdb, database_writes}),
     AllOrNothing = lists:member(all_or_nothing, Options),
     % go ahead and generate the new revision ids for the documents.

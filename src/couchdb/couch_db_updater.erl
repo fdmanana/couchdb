@@ -476,7 +476,7 @@ flush_trees(#db{updater_fd = Fd} = Db,
                     throw(retry)
                 end,
                 {ok, NewSummaryPointer} =
-                    couch_file:append_term_md5(Fd, {zlib:zip(Doc#doc.body), DiskAtts}),
+                    couch_file:append_term_md5(Fd, {Doc#doc.body, DiskAtts}),
                 {IsDeleted, NewSummaryPointer, UpdateSeq};
             _ ->
                 Value
