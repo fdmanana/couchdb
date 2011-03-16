@@ -644,10 +644,7 @@ check_dup_atts2(_) ->
 
 
 update_docs(Db, Docs1, Options, replicated_changes) ->
-    Docs = [begin
-                #doc{body = Body} = Doc1 = couch_doc:with_json_body(Doc),
-                Doc1#doc{body = zlib:zip(Body)} end
-        || Doc <- Docs1],
+    Docs = [couch_doc:with_json_body(Doc) || Doc <- Docs1],
     increment_stat(Db, {couchdb, database_writes}),
     DocBuckets = group_alike_docs(Docs),
 
@@ -674,10 +671,7 @@ update_docs(Db, Docs1, Options, replicated_changes) ->
     {ok, DocErrors};
 
 update_docs(Db, Docs1, Options, interactive_edit) ->
-    Docs = [begin
-                #doc{body = Body} = Doc1 = couch_doc:with_json_body(Doc),
-                Doc1#doc{body = zlib:zip(Body)} end
-        || Doc <- Docs1],
+    Docs = [couch_doc:with_json_body(Doc) || Doc <- Docs1],
     increment_stat(Db, {couchdb, database_writes}),
     AllOrNothing = lists:member(all_or_nothing, Options),
     % go ahead and generate the new revision ids for the documents.
@@ -1181,14 +1175,7 @@ make_doc(#db{updater_fd = Fd} = Db, Id, Deleted, Bp, RevisionPath) ->
         {(#doc{})#doc.body, []};
     _ ->
         {ok, {BodyData0, Atts0}} = read_doc(Db, Bp),
-        BodyData1 = case BodyData0 of
-        {_} ->
-            % pre 1.2.0 format, EJSON, will be upgraded after compaction
-            BodyData0;
-        _ ->
-            zlib:unzip(BodyData0)
-        end,
-        {BodyData1,
+        {BodyData0,
             lists:map(
                 fun({Name,Type,Sp,AttLen,DiskLen,RevPos,Md5,Enc}) ->
                     #att{name=Name,

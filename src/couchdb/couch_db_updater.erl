@@ -753,7 +753,8 @@ copy_doc_attachments(#db{updater_fd = SrcFd} = SrcDb, SrcSp, DestFd) ->
     case BodyData of
     {_} ->
         %% 1.2.0 upgrade code, EJSON doc body
-        {zlib:zip(?JSON_ENCODE(BodyData)), NewBinInfos};
+        {term_to_binary(BodyData, [{compress, 9}, {minor_version, 1}]),
+            NewBinInfos};
     _ ->
         {BodyData, NewBinInfos}
     end.

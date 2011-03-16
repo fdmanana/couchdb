@@ -559,7 +559,8 @@ ejson_to_doc({Props}, Options) ->
     true ->
         Doc;
     false ->
-        Doc#doc{body = iolist_to_binary(?JSON_ENCODE(EjsonBody))}
+        Doc#doc{body = term_to_binary(
+            EjsonBody, [{compressed, 1}, {minor_version, 1}])}
     end;
 ejson_to_doc(_Other, _Options) ->
     throw({bad_request, "Document must be a JSON object"}).
@@ -568,9 +569,18 @@ ejson_to_doc(_Other, _Options) ->
 doc_to_json(Doc) ->
     doc_to_json(Doc, []).
 
-doc_to_json(#doc{id = Id, body = <<${, Body/binary>>, revs = {Start, RevIds},
+doc_to_json(Doc, Options) ->
+    iolist_to_binary(?JSON_ENCODE(doc_to_ejson(Doc, Options))).
+
+
+doc_to_ejson(Doc) ->
+    doc_to_ejson(Doc, []).
+
+doc_to_ejson(#doc{body = Body} = Doc, Options) when is_binary(Body) ->
+    doc_to_ejson(Doc#doc{body = binary_to_term(Body)}, Options);
+doc_to_ejson(#doc{id = Id, body = {Body}, revs = {Start, RevIds},
         meta = Meta, atts = Atts, deleted = Del}, Options) ->
-    Prefix1 = iolist_to_binary(?JSON_ENCODE({
+    {
         [{<<"_id">>, Id}]
         ++ to_json_rev(Start, RevIds)
         ++ case Del of
@@ -580,33 +590,18 @@ doc_to_json(#doc{id = Id, body = <<${, Body/binary>>, revs = {Start, RevIds},
         ++ to_json_revisions(Options, Start, RevIds)
         ++ to_json_meta(Meta)
         ++ to_json_attachments(Atts, Options)
-    })),
-    PrefixSize = byte_size(Prefix1) - 1,
-    <<Prefix:PrefixSize/binary, $}>> = Prefix1,
-    case Body of
-    <<"}">> ->
-       <<Prefix/binary, "}">>;
-    _ ->
-       <<Prefix/binary, ",", Body/binary>>
-    end;
-doc_to_json(#doc{body = Ejson} = Doc, Options) ->
-    doc_to_json(Doc#doc{body = iolist_to_binary(?JSON_ENCODE(Ejson))}, Options).
-
-
-doc_to_ejson(Doc) ->
-    doc_to_ejson(Doc, []).
-
-doc_to_ejson(Doc, Options) ->
-    ?JSON_DECODE(doc_to_json(Doc, Options)).
+        ++ Body
+    }.
 
 
 with_json_body(#doc{body = Json} = Doc) when is_binary(Json) ->
     Doc;
 with_json_body(#doc{body = EJson} = Doc) ->
-    Doc#doc{body = iolist_to_binary(?JSON_ENCODE(EJson))}.
+    Doc#doc{body = term_to_binary(
+        EJson, [{compressed, 1}, {minor_version, 1}])}.
 
 
 with_ejson_body(#doc{body = Json} = Doc) when is_binary(Json) ->
-    Doc#doc{body = ?JSON_DECODE(Json)};
+    Doc#doc{body = binary_to_term(Json)};
 with_ejson_body(Doc) ->
     Doc.
