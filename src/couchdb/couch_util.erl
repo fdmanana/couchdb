@@ -375,19 +375,36 @@ url_encode([]) ->
     [].
 
 json_encode(V) ->
-    case json:encode(V) of
-    {ok, Json} ->
-        Json;
-    Error ->
-        exit({json_encode, {Error, {value, V}}})
+    try
+        case json:encode(V) of
+        {ok, Json} ->
+            Json;
+        Error ->
+            exit({json_encode, Error})
+        end
+    catch exit:{json_not_loaded, module, _, _, _} ->
+        Handler = fun({L}) when is_list(L) ->
+        {struct,L};
+        (Bad) ->
+            exit({json_encode, {bad_term, Bad}})
+        end,
+        (mochijson2:encoder([{handler, Handler}]))(V)
     end.
 
 json_decode(V) ->
-    case json:decode(V) of
-    {ok, Ejson} ->
-        Ejson;
-    Error ->
-        throw({invalid_json, Error})
+    try
+        case json:decode(V) of
+        {ok, Ejson} ->
+            Ejson;
+        Error ->
+            throw({invalid_json, {Error, V}})
+        end
+    catch exit:{json_not_loaded, module, _, _, _} ->
+        try
+            (mochijson2:decoder([{object_hook, fun({struct,L}) -> {L} end}]))(V)
+        catch _Type:Err ->
+            throw({invalid_json, {Err, V}})
+        end
     end.
 
 verify([X|RestX], [Y|RestY], Result) ->
