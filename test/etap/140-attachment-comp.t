@@ -116,7 +116,7 @@ create_2nd_text_att() ->
     {ok, {{_, Code, _}, _Headers, _Body}} = http:request(
         put,
         {db_url() ++ "/testdoc3", [],
-        "application/json", list_to_binary(couch_util:json_encode(DocJson))},
+        "application/json", couch_util:json_encode(DocJson)},
         [],
         [{sync, true}]),
     etap:is(Code, 201, "Created text attachment using the non-standalone api"),
@@ -135,7 +135,7 @@ create_2nd_png_att() ->
     {ok, {{_, Code, _}, _Headers, _Body}} = http:request(
         put,
         {db_url() ++ "/testdoc4", [],
-        "application/json", list_to_binary(couch_util:json_encode(DocJson))},
+        "application/json", couch_util:json_encode(DocJson)},
         [],
         [{sync, true}]),
     etap:is(Code, 201, "Created png attachment using the non-standalone api"),

@@ -27,7 +27,7 @@ else
 ICU_LOCAL_LIBS=-licuuc -licudata -licui18n
 endif
 
-couchprivlib_LTLIBRARIES = couch_icu_driver.la
+couchprivlib_LTLIBRARIES = couch_icu_driver.la json.la
 couch_icu_driver_la_SOURCES = icu_driver/couch_icu_driver.c
 couch_icu_driver_la_LDFLAGS = -module -avoid-version $(ICU_LOCAL_FLAGS)
 couch_icu_driver_la_CFLAGS = $(ICU_LOCAL_FLAGS)
@@ -35,6 +35,37 @@ couch_icu_driver_la_LIBADD = $(ICU_LOCAL_LIBS)
 
 if WINDOWS
 couch_icu_driver_la_LDFLAGS += -no-undefined
+endif
+
+JSON_SRCS = \
+	json/json.c \
+	json/decode.c \
+	json/encode.c \
+	json/erl_nif_compat.h \
+	json/yajl/yajl_alloc.c \
+	json/yajl/yajl_alloc.h \
+	json/yajl/yajl_buf.c \
+	json/yajl/yajl_buf.h \
+	json/yajl/yajl_bytestack.h \
+	json/yajl/yajl.c \
+	json/yajl/yajl_common.h \
+	json/yajl/yajl_encode.c \
+	json/yajl/yajl_encode.h \
+	json/yajl/yajl_gen.c \
+	json/yajl/yajl_gen.h \
+	json/yajl/yajl_lex.c \
+	json/yajl/yajl_lex.h \
+	json/yajl/yajl_parse.h \
+	json/yajl/yajl_parser.c \
+	json/yajl/yajl_parser.h
+
+json_la_SOURCES = $(JSON_SRCS)
+json_la_LDFLAGS = -module -avoid-version $(COUCH_JSON_LOCAL_FLAGS)
+json_la_CFLAGS = $(COUCH_JSON_LOCAL_FLAGS)
+json_la_LIBADD = $(COUCH_JSON_LOCAL_LIBS)
+
+if WINDOWS
+json_la_LDFLAGS += -no-undefined
 endif
 
 COUCHJS_SRCS = \
