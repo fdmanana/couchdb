@@ -41,4 +41,3 @@ run: ../bin/couchdb.tpl
 	    -e "s|%couchdb_command_name%|$(couchdb_command_name)|g" > \
 	$@ < $<
 	chmod +x $@
-	$(LN_S) $(abs_top_builddir)/src/ejson/.libs $(abs_top_builddir)/src/ejson/priv

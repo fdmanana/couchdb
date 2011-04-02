@@ -23,23 +23,13 @@ EJSON_C_SRCS = \
 	ejson.c \
 	decode.c \
 	encode.c \
-	erl_nif_compat.h \
 	yajl/yajl_alloc.c \
-	yajl/yajl_alloc.h \
 	yajl/yajl_buf.c \
-	yajl/yajl_buf.h \
-	yajl/yajl_bytestack.h \
 	yajl/yajl.c \
-	yajl/yajl_common.h \
 	yajl/yajl_encode.c \
-	yajl/yajl_encode.h \
 	yajl/yajl_gen.c \
-	yajl/yajl_gen.h \
 	yajl/yajl_lex.c \
-	yajl/yajl_lex.h \
-	yajl/yajl_parse.h \
-	yajl/yajl_parser.c \
-	yajl/yajl_parser.h
+	yajl/yajl_parser.c
 
 ejson_la_SOURCES = $(EJSON_C_SRCS)
 ejson_la_LDFLAGS = -module -avoid-version
@@ -62,10 +52,23 @@ ejsonebin_DATA = \
 
 EXTRA_DIST =  \
     $(ejson_file_collection) \
-	priv
+    erl_nif_compat.h \
+    yajl/yajl_alloc.h \
+    yajl/yajl_buf.h \
+    yajl/yajl_bytestack.h \
+    yajl/yajl_common.h \
+    yajl/yajl_encode.h \
+    yajl/yajl_gen.h \
+    yajl/yajl_lex.h \
+    yajl/yajl_parse.h \
+    yajl/yajl_parser.h \
+    priv
 
-dev: all
+priv/ejson.so: .libs/ejson.so
 	$(LN_S) .libs priv
+
+all: priv/ejson.so
+
 
 %.app: %.app.in
 	cp $< $@
