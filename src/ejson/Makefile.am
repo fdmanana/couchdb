@@ -17,7 +17,9 @@ CLEANFILES = \
     $(ejsonebin_make_generated_file_list) \
     $(ejsonpriv_make_generated_file_list)
 
+if USE_OTP_NIFS
 ejsonpriv_LTLIBRARIES = ejson.la
+endif
 
 EJSON_C_SRCS = \
 	ejson.c \
@@ -31,21 +33,27 @@ EJSON_C_SRCS = \
 	yajl/yajl_lex.c \
 	yajl/yajl_parser.c
 
+if USE_OTP_NIFS
 ejson_la_SOURCES = $(EJSON_C_SRCS)
 ejson_la_LDFLAGS = -module -avoid-version
 
 if WINDOWS
 ejson_la_LDFLAGS += -no-undefined
 endif
+endif
 
 ejson_file_collection = \
-	ejson.app.in \
+    ejson.app.in \
     ejson.erl \
+    mochijson2.erl \
+    mochinum.erl \
     $(JSON_C_SRCS)
 
 ejsonebin_make_generated_file_list = \
-	ejson.app \
-    ejson.beam
+    ejson.app \
+    ejson.beam \
+    mochijson2.beam \
+    mochinum.beam
 
 ejsonebin_DATA = \
     $(ejsonebin_make_generated_file_list)
@@ -64,11 +72,12 @@ EXTRA_DIST =  \
     yajl/yajl_parser.h \
     priv
 
+if USE_OTP_NIFS
 priv/ejson.so: .libs/ejson.so
 	$(LN_S) .libs priv
 
 all: priv/ejson.so
-
+endif
 
 %.app: %.app.in
 	cp $< $@
