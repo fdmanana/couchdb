@@ -376,13 +376,13 @@ url_encode([]) ->
 
 json_encode(V) ->
     try
-        case json:encode(V) of
+        case ejson:encode(V) of
         {ok, Json} ->
             Json;
         Error ->
             exit({json_encode, Error})
         end
-    catch exit:{json_not_loaded, module, _, _, _} ->
+    catch exit:{ejson_not_loaded, module, _, _, _} ->
         Handler = fun({L}) when is_list(L) ->
         {struct,L};
         (Bad) ->
@@ -393,13 +393,13 @@ json_encode(V) ->
 
 json_decode(V) ->
     try
-        case json:decode(V) of
+        case ejson:decode(V) of
         {ok, Ejson} ->
             Ejson;
         Error ->
             throw({invalid_json, {Error, V}})
         end
-    catch exit:{json_not_loaded, module, _, _, _} ->
+    catch exit:{ejson_not_loaded, module, _, _, _} ->
         try
             (mochijson2:decoder([{object_hook, fun({struct,L}) -> {L} end}]))(V)
         catch _Type:Err ->

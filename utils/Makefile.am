@@ -25,6 +25,7 @@ run: ../bin/couchdb.tpl
 	    -e "s|%localini%|local_dev.ini|g" \
 	    -e "s|%localerlanglibdir%|foo \
 			-pa $(abs_top_builddir)\/src\/couchdb \
+			-pa $(abs_top_builddir)\/src\/ejson \
 			-pa $(abs_top_builddir)\/src\/erlang-oauth \
 			-pa $(abs_top_builddir)\/src\/ibrowse \
 			-pa $(abs_top_builddir)\/src\/mochiweb|g" \
@@ -40,3 +41,4 @@ run: ../bin/couchdb.tpl
 	    -e "s|%couchdb_command_name%|$(couchdb_command_name)|g" > \
 	$@ < $<
 	chmod +x $@
+	$(LN_S) $(abs_top_builddir)/src/ejson/.libs $(abs_top_builddir)/src/ejson/priv

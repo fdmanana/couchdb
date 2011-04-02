@@ -27,4 +27,4 @@ static ErlNifFunc nif_funcs[] =
     {"reverse_tokens", 1, reverse_tokens}
 };
 
-ERL_NIF_INIT(json, nif_funcs, &on_load, &on_reload, &on_upgrade, NULL);
+ERL_NIF_INIT(ejson, nif_funcs, &on_load, &on_reload, &on_upgrade, NULL);

@@ -1,15 +1,20 @@
--module(json).
+-module(ejson).
 -export([encode/1, decode/1, fuzz/0, fuzz/1]).
 -on_load(init/0).
 
 init() ->
-    LibDir = case couch_config:get("couchdb", "util_driver_dir") of
-    undefined ->
-        filename:join(couch_util:priv_dir(), "lib");
-    LibDir0 ->
-        LibDir0
+    SoName = case code:priv_dir(ejson) of
+        {error, bad_name} ->
+            case filelib:is_dir(filename:join(["..", priv])) of
+                true ->
+                    filename:join(["..", priv, ejson]);
+                _ ->
+                    filename:join([priv, ejson])
+            end;
+        Dir ->
+            filename:join(Dir, ejson)
     end,
-    ok = erlang:load_nif(LibDir ++ "/json", 0).
+    ok = erlang:load_nif(SoName, 0).
 
 decode(IoList) ->
     case reverse_tokens(IoList) of
@@ -110,7 +115,7 @@ fuzz(Chooser) ->
     json_fuzz:fuzz(Chooser).
 
 not_loaded(Line) ->
-    exit({json_not_loaded, module, ?MODULE, line, Line}).
+    exit({ejson_not_loaded, module, ?MODULE, line, Line}).
 
 reverse_tokens(_) ->
     not_loaded(?LINE).
