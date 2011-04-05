@@ -10,8 +10,8 @@
 ## License for the specific language governing permissions and limitations under
 ## the License.
 
-ejsonebindir = $(localerlanglibdir)/ejson-0.0.1/ebin
-ejsonprivdir = $(localerlanglibdir)/ejson-0.0.1/priv
+ejsonebindir = $(localerlanglibdir)/ejson-0.1.0/ebin
+ejsonprivdir = $(localerlanglibdir)/ejson-0.1.0/priv
 
 CLEANFILES = \
     $(ejsonebin_make_generated_file_list) \
