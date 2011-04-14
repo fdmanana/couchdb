@@ -67,7 +67,7 @@ handle_call(increment_update_seq, _From, Db) ->
     {reply, {ok, Db2#db.update_seq}, Db2};
 
 handle_call({set_security, NewSec}, _From, Db) ->
-    {ok, Ptr} = couch_file:append_term(Db#db.updater_fd, NewSec),
+    {ok, Ptr, _} = couch_file:append_term(Db#db.updater_fd, NewSec),
     Db2 = commit_data(Db#db{security=NewSec, security_ptr=Ptr,
             update_seq=Db#db.update_seq+1}),
     ok = gen_server:call(Db2#db.main_pid, {db_updated, Db2}),
@@ -133,7 +133,7 @@ handle_call({purge_docs, IdRevs}, _From, Db) ->
             DocInfoToUpdate, SeqsToRemove),
     {ok, DocInfoByIdBTree2} = couch_btree:add_remove(DocInfoByIdBTree,
             FullDocInfoToUpdate, IdsToRemove),
-    {ok, Pointer} = couch_file:append_term(Fd, IdRevsPurged),
+    {ok, Pointer, _} = couch_file:append_term(Fd, IdRevsPurged),
 
     Db2 = commit_data(
         Db#db{
@@ -476,7 +476,7 @@ flush_trees(#db{updater_fd = Fd} = Db,
                             " changed. Possibly retrying.", []),
                     throw(retry)
                 end,
-                {ok, NewSummaryPointer} =
+                {ok, NewSummaryPointer, _} =
                     couch_file:append_term_md5(Fd, {Doc#doc.body, DiskAtts}),
                 {IsDeleted, NewSummaryPointer, UpdateSeq};
             _ ->
@@ -765,7 +765,7 @@ copy_docs(Db, #db{updater_fd = DestFd} = NewDb, InfoBySeq0, Retry) ->
             Info#full_doc_info{rev_tree=couch_key_tree:map(
                 fun(_Rev, {IsDel, Sp, Seq}, leaf) ->
                     DocBody = copy_doc_attachments(Db, Sp, DestFd),
-                    {ok, Pos} = couch_file:append_term_md5(DestFd, DocBody),
+                    {ok, Pos, _} = couch_file:append_term_md5(DestFd, DocBody),
                     {IsDel, Pos, Seq};
                 (_, _, branch) ->
                     ?REV_MISSING
@@ -827,7 +827,7 @@ copy_compact(Db, NewDb0, Retry) ->
 
     % copy misc header values
     if NewDb3#db.security /= Db#db.security ->
-        {ok, Ptr} = couch_file:append_term(NewDb3#db.updater_fd, Db#db.security),
+        {ok, Ptr, _} = couch_file:append_term(NewDb3#db.updater_fd, Db#db.security),
         NewDb4 = NewDb3#db{security=Db#db.security, security_ptr=Ptr};
     true ->
         NewDb4 = NewDb3
@@ -858,7 +858,7 @@ start_copy_compact(#db{name=Name,filepath=Filepath,header=#db_header{purge_seq=P
     NewDb = init_db(Name, CompactFile, Fd, ReaderFd, Header, Db#db.options),
     NewDb2 = if PurgeSeq > 0 ->
         {ok, PurgedIdsRevs} = couch_db:get_last_purged(Db),
-        {ok, Pointer} = couch_file:append_term(Fd, PurgedIdsRevs),
+        {ok, Pointer, _} = couch_file:append_term(Fd, PurgedIdsRevs),
         NewDb#db{header=Header#db_header{purge_seq=PurgeSeq, purged_docs=Pointer}};
     true ->
         NewDb

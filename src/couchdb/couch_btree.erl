@@ -331,7 +331,7 @@ write_node(Bt, NodeType, NodeList) ->
     % now write out each chunk and return the KeyPointer pairs for those nodes
     ResultList = [
         begin
-            {ok, Pointer} = couch_file:append_term(Bt#btree.fd, {NodeType, ANodeList}),
+            {ok, Pointer, _} = couch_file:append_term(Bt#btree.fd, {NodeType, ANodeList}),
             {LastKey, _} = lists:last(ANodeList),
             {LastKey, {Pointer, reduce_node(Bt, NodeType, ANodeList)}}
         end
