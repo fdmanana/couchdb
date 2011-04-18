@@ -533,6 +533,7 @@ get_group_info(State) ->
     #group{
         fd = Fd,
         sig = GroupSig,
+        id_btree = Btree,
         def_lang = Lang,
         current_seq=CurrentSeq,
         purge_seq=PurgeSeq
@@ -542,6 +543,7 @@ get_group_info(State) ->
         {signature, ?l2b(hex_sig(GroupSig))},
         {language, Lang},
         {disk_size, Size},
+        {id_btree_size, couch_btree:size(Btree)},
         {updater_running, UpdaterPid /= nil},
         {compact_running, CompactorPid /= nil},
         {waiting_commit, WaitingCommit},
