@@ -31,7 +31,10 @@ couchTests.compact = function(debug) {
   T(db.save(binAttDoc).ok);
 
   var originalsize = db.info().disk_size;
+  var originaldatasize = db.info().data_size;
   var start_time = db.info().instance_start_time;
+
+  T(originaldatasize < originalsize, "data size is < then db file size");
 
   for(var i in docs) {
       db.deleteDoc(docs[i]);
@@ -55,5 +58,6 @@ couchTests.compact = function(debug) {
   T(xhr.getResponseHeader("Content-Type") == "text/plain");
   T(db.info().doc_count == 1);
   T(db.info().disk_size < deletesize);
+  T(db.info().data_size < db.info().disk_size, "data size is < then db file size");
 
 };
