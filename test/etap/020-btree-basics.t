@@ -17,7 +17,15 @@
 filename() -> test_util:build_file("test/etap/temp.020").
 rows() -> 250.
 
--record(btree, {fd, root, extract_kv, assemble_kv, less, reduce}).
+-record(btree, {
+    fd,
+    root,
+    extract_kv,
+    assemble_kv,
+    less,
+    reduce,
+    compression
+}).
 
 main(_) ->
     test_util:init_code_path(),
@@ -52,7 +60,7 @@ test_kvs(KeyValues) ->
     Keys = [K || {K, _} <- KeyValues],
 
     {ok, Fd} = couch_file:open(filename(), [create,overwrite]),
-    {ok, Btree} = couch_btree:open(nil, Fd),
+    {ok, Btree} = couch_btree:open(nil, Fd, [{compression, none}]),
     etap:ok(is_record(Btree, btree), "Created btree is really a btree record"),
     etap:is(Btree#btree.fd, Fd, "Btree#btree.fd is set correctly."),
     etap:is(Btree#btree.root, nil, "Btree#btree.root is set correctly."),
@@ -84,11 +92,11 @@ test_kvs(KeyValues) ->
     {ok, Btree3} = couch_btree:add_remove(Btree2, [], Keys),
     etap:ok(test_btree(Btree3, []),
         "Removing all keys at once returns an empty btree."),
-
     etap:is(0, couch_btree:size(Btree3),
             "After removing all keys btree size is 0."),
 
     {Btree4, _} = lists:foldl(fun(KV, {BtAcc, PrevSize}) ->
+        ok = couch_file:flush(Fd),
         {ok, BtAcc2} = couch_btree:add_remove(BtAcc, [KV], []),
         case couch_btree:size(BtAcc2) > PrevSize of
         true ->
@@ -162,13 +170,15 @@ test_kvs(KeyValues) ->
     etap:is(couch_file:close(Fd), ok, "closing out"),
     true.
 
-test_btree(Btree, KeyValues) ->
+test_btree(#btree{fd = Fd} = Btree, KeyValues) ->
+    ok = couch_file:flush(Fd),
     ok = test_key_access(Btree, KeyValues),
     ok = test_lookup_access(Btree, KeyValues),
     ok = test_final_reductions(Btree, KeyValues),
     true.
 
-test_add_remove(Btree, OutKeyValues, RemainingKeyValues) ->
+test_add_remove(#btree{fd = Fd} = Btree, OutKeyValues, RemainingKeyValues) ->
+    ok = couch_file:flush(Fd),
     Btree2 = lists:foldl(fun({K, _}, BtAcc) ->
         {ok, BtAcc2} = couch_btree:add_remove(BtAcc, [], [K]),
         BtAcc2
@@ -181,7 +191,7 @@ test_add_remove(Btree, OutKeyValues, RemainingKeyValues) ->
     end, Btree2, OutKeyValues),
     true = test_btree(Btree3, OutKeyValues ++ RemainingKeyValues).
 
-test_key_access(Btree, List) ->
+test_key_access(#btree{fd = Fd} = Btree, List) ->
     FoldFun = fun(Element, {[HAcc|TAcc], Count}) ->
         case Element == HAcc of
             true -> {ok, {TAcc, Count + 1}};
@@ -190,18 +200,21 @@ test_key_access(Btree, List) ->
     end,
     Length = length(List),
     Sorted = lists:sort(List),
+    ok = couch_file:flush(Fd),
     {ok, _, {[], Length}} = couch_btree:foldl(Btree, FoldFun, {Sorted, 0}),
     {ok, _, {[], Length}} = couch_btree:fold(Btree, FoldFun, {Sorted, 0}, [{dir, rev}]),
     ok.
 
-test_lookup_access(Btree, KeyValues) ->
+test_lookup_access(#btree{fd = Fd} = Btree, KeyValues) ->
+    ok = couch_file:flush(Fd),
     FoldFun = fun({Key, Value}, {Key, Value}) -> {stop, true} end,
     lists:foreach(fun({Key, Value}) ->
         [{ok, {Key, Value}}] = couch_btree:lookup(Btree, [Key]),
         {ok, _, true} = couch_btree:foldl(Btree, FoldFun, {Key, Value}, [{start_key, Key}])
     end, KeyValues).
 
-test_final_reductions(Btree, KeyValues) ->
+test_final_reductions(#btree{fd = Fd} = Btree, KeyValues) ->
+    ok = couch_file:flush(Fd),
     KVLen = length(KeyValues),
     FoldLFun = fun(_X, LeadingReds, Acc) ->
         CountToStart = KVLen div 3 + Acc,

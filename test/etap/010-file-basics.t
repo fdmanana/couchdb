@@ -57,6 +57,7 @@ test() ->
 
     ?etap_match(couch_file:append_binary(Fd, <<"fancy!">>), {ok, Size, _},
         "Appending a binary returns the current file size."),
+    ok = couch_file:flush(Fd),
 
     etap:is({ok, foo}, couch_file:pread_term(Fd, 0),
         "Reading the first term returns what we wrote: foo"),
@@ -64,17 +65,19 @@ test() ->
     etap:is({ok, <<"fancy!">>}, couch_file:pread_binary(Fd, Size),
         "Reading back the binary returns what we wrote: <<\"fancy\">>."),
 
-    etap:is({ok, <<131, 100, 0, 3, 102, 111, 111>>},
+    etap:is({ok, couch_compress:compress(foo, snappy)},
         couch_file:pread_binary(Fd, 0),
         "Reading a binary at a term position returns the term as binary."
     ),
 
     {ok, BinPos, _} = couch_file:append_binary(Fd, <<131,100,0,3,102,111,111>>),
+    ok = couch_file:flush(Fd),
     etap:is({ok, foo}, couch_file:pread_term(Fd, BinPos),
         "Reading a term from a written binary term representation succeeds."),
         
     BigBin = list_to_binary(lists:duplicate(100000, 0)),
     {ok, BigBinPos, _} = couch_file:append_binary(Fd, BigBin),
+    ok = couch_file:flush(Fd),
     etap:is({ok, BigBin}, couch_file:pread_binary(Fd, BigBinPos),
         "Reading a large term from a written representation succeeds."),
     
@@ -83,12 +86,14 @@ test() ->
         "Reading a header succeeds."),
         
     {ok, BigBinPos2, _} = couch_file:append_binary(Fd, BigBin),
+    ok = couch_file:flush(Fd),
     etap:is({ok, BigBin}, couch_file:pread_binary(Fd, BigBinPos2),
         "Reading a large term from a written representation succeeds 2."),
 
     % append_binary == append_iolist?
     % Possible bug in pread_iolist or iolist() -> append_binary
     {ok, IOLPos, _} = couch_file:append_binary(Fd, ["foo", $m, <<"bam">>]),
+    ok = couch_file:flush(Fd),
     {ok, IoList} = couch_file:pread_iolist(Fd, IOLPos),
     etap:is(<<"foombam">>, iolist_to_binary(IoList),
         "Reading an results in a binary form of the written iolist()"),

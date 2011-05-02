@@ -34,6 +34,8 @@ source_files = \
     couch_auth_cache.erl \
     couch_btree.erl \
     couch_changes.erl \
+    couch_compress.erl \
+    couch_compress_types.erl \
     couch_config.erl \
     couch_config_writer.erl \
     couch_db.erl \
@@ -89,7 +91,8 @@ source_files = \
     couch_view_group.erl \
     couch_db_updater.erl \
     couch_work_queue.erl \
-    json_stream_parse.erl
+    json_stream_parse.erl \
+    couch_internal_load_gen.erl
 
 EXTRA_DIST = $(source_files) couch_api_wrap.hrl couch_db.hrl couch_js_functions.hrl couch_replicator.hrl
 
@@ -102,6 +105,8 @@ compiled_files = \
     couch_auth_cache.beam \
     couch_btree.beam \
     couch_changes.beam \
+    couch_compress.beam \
+    couch_compress_types.beam \
     couch_config.beam \
     couch_config_writer.beam \
     couch_db.beam \
@@ -157,7 +162,8 @@ compiled_files = \
     couch_view_group.beam \
     couch_db_updater.beam \
     couch_work_queue.beam \
-    json_stream_parse.beam
+    json_stream_parse.beam \
+    couch_internal_load_gen.beam
 
 # doc_base = \
 #     erlang.png \

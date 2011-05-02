@@ -79,7 +79,7 @@ update(Owner, Group) ->
     end.
 
 
-purge_index(#group{db=Db, views=Views, id_btree=IdBtree}=Group) ->
+purge_index(#group{fd=Fd, db=Db, views=Views, id_btree=IdBtree}=Group) ->
     {ok, PurgedIdsRevs} = couch_db:get_last_purged(Db),
     Ids = [Id || {Id, _Revs} <- PurgedIdsRevs],
     {ok, Lookups, IdBtree2} = couch_btree:query_modify(IdBtree, Ids, [], Ids),
@@ -112,6 +112,7 @@ purge_index(#group{db=Db, views=Views, id_btree=IdBtree}=Group) ->
                 View
             end
         end, Views),
+    ok = couch_file:flush(Fd),
     Group#group{id_btree=IdBtree2,
             views=Views2,
             purge_seq=PurgeSeq}.
@@ -168,7 +169,8 @@ do_writes(Parent, Owner, Group, WriteQueue, InitialBuild) ->
                 InitialBuild),
         case Owner of
         nil -> ok;
-        _ -> ok = gen_server:cast(Owner, {partial_update, Parent, Group2})
+        _ ->
+            ok = gen_server:cast(Owner, {partial_update, Parent, Group2})
         end,
         do_writes(Parent, Owner, Group2, WriteQueue, InitialBuild)
     end.
@@ -224,7 +226,7 @@ view_compute(#group{def_lang=DefLang, lib=Lib, query_server=QueryServerIn}=Group
 
 
 write_changes(Group, ViewKeyValuesToAdd, DocIdViewIdKeys, NewSeq, InitialBuild) ->
-    #group{id_btree=IdBtree} = Group,
+    #group{id_btree=IdBtree,fd=Fd} = Group,
 
     AddDocIdViewIdKeys = [{DocId, ViewIdKeys} || {DocId, ViewIdKeys} <- DocIdViewIdKeys, ViewIdKeys /= []],
     if InitialBuild ->
@@ -260,6 +262,7 @@ write_changes(Group, ViewKeyValuesToAdd, DocIdViewIdKeys, NewSeq, InitialBuild) 
                     View#view{btree=ViewBtree2}
             end
         end,    Group#group.views, ViewKeyValuesToAdd),
+    couch_file:flush(Fd),
     Group#group{views=Views2, current_seq=NewSeq, id_btree=IdBtree2}.
 
 

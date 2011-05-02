@@ -18,21 +18,11 @@
 -export([validate_docid/1]).
 -export([doc_from_multi_part_stream/2]).
 -export([doc_to_multi_part_stream/5, len_doc_to_multi_part_stream/4]).
--export([to_path/1]).
 -export([mp_parse_doc/2]).
+-export([with_ejson_body/1, with_bin_body/1]).
 
 -include("couch_db.hrl").
 
--spec to_path(#doc{}) -> path().
-to_path(#doc{revs={Start, RevIds}}=Doc) ->
-    [Branch] = to_branch(Doc, lists:reverse(RevIds)),
-    {Start - length(RevIds) + 1, Branch}.
-
--spec to_branch(#doc{}, [RevId::binary()]) -> [branch()].
-to_branch(Doc, [RevId]) ->
-    [{RevId, Doc, []}];
-to_branch(Doc, [RevId | Rest]) ->
-    [{RevId, ?REV_MISSING, to_branch(Doc, Rest)}].
 
 % helpers used by to_json_obj
 to_json_rev(0, []) ->
@@ -132,7 +122,10 @@ to_json_attachments(Atts, OutputData, DataToFollow, ShowEncInfo) ->
         end, Atts),
     [{<<"_attachments">>, {AttProps}}].
 
-to_json_obj(#doc{id=Id,deleted=Del,body=Body,revs={Start, RevIds},
+to_json_obj(Doc, Options) ->
+    doc_to_json_obj(with_ejson_body(Doc), Options).
+
+doc_to_json_obj(#doc{id=Id,deleted=Del,body=Body,revs={Start, RevIds},
             meta=Meta}=Doc,Options)->
     {[{<<"_id">>, Id}]
         ++ to_json_rev(Start, RevIds)
@@ -530,3 +523,15 @@ mp_parse_atts({body, Bytes}) ->
     fun mp_parse_atts/1;
 mp_parse_atts(body_end) ->
     fun mp_parse_atts/1.
+
+
+with_bin_body(#doc{body = Json} = Doc) when is_binary(Json) ->
+    Doc;
+with_bin_body(#doc{body = EJson} = Doc) ->
+    Doc#doc{body = couch_compress:compress(EJson)}.
+
+
+with_ejson_body(#doc{body = Body} = Doc) when is_binary(Body) ->
+    Doc#doc{body = couch_compress:decompress(Body)};
+with_ejson_body(#doc{body = {_}} = Doc) ->
+    Doc.
