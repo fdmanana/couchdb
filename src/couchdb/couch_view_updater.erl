@@ -27,14 +27,11 @@ update(Owner, Group) ->
     } = Group,
 
     DbPurgeSeq = couch_db:get_purge_seq(Db),
-    Group2 =
     if DbPurgeSeq == PurgeSeq ->
-        Group;
+        ok;
     DbPurgeSeq == PurgeSeq + 1 ->
-        couch_task_status:update(<<"Removing purged entries from view index.">>),
-        purge_index(Group);
+        ok;
     true ->
-        couch_task_status:update(<<"Resetting view index due to lost purge entries.">>),
         exit(reset)
     end,
     {ok, MapQueue} = couch_work_queue:new(
@@ -42,9 +39,9 @@ update(Owner, Group) ->
     {ok, WriteQueue} = couch_work_queue:new(
         [{max_size, 100000}, {max_items, 500}]),
     Self = self(),
-    ViewEmptyKVs = [{View, []} || View <- Group2#group.views],
+
     spawn_link(fun() ->
-        do_maps(add_query_server(Group2), MapQueue, WriteQueue)
+        do_maps(add_query_server(Group), MapQueue, WriteQueue)
     end),
     TotalChanges = couch_db:count_changes_since(Db, Seq),
     spawn_link(fun() ->
@@ -53,6 +50,14 @@ update(Owner, Group) ->
             <<DbName/binary, " ", GroupName/binary>>,
             <<"Starting index update">>),
         couch_task_status:set_update_frequency(500),
+        Group2 =
+        if DbPurgeSeq == PurgeSeq + 1 ->
+            couch_task_status:update(<<"Removing purged entries from view index.">>),
+            purge_index(Group);
+        true ->
+            Group
+        end,
+        ViewEmptyKVs = [{View, []} || View <- Group2#group.views],
         do_writes(Self, Owner, Group2, WriteQueue,
             Seq == 0, ViewEmptyKVs, 0, TotalChanges),
         couch_task_status:set_update_frequency(0),
