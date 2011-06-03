@@ -174,28 +174,9 @@ atom_sort_order(ERL_NIF_TERM a)
 static inline int
 term_is_number(ErlNifEnv* env, ERL_NIF_TERM t)
 {
-    ErlNifSInt64 int64v;
-    ErlNifUInt64 uint64v;
-    double doublev;
-
-    if (enif_get_int64(env, t, &int64v)) {
-        return 1;
-    }
-
-    if (enif_get_uint64(env, t, &uint64v)) {
-        return 1;
-    }
-
-    if (enif_get_double(env, t, &doublev)) {
-        return 1;
-    }
-
-    if (!enif_is_binary(env, t) && !enif_is_list(env, t) &&
-        !enif_is_tuple(env, t)) {
-        return 1;
-    }
-
-    return 0;
+    /* Determination by exclusion of parts. To be used only inside less_json! */
+    return !enif_is_binary(env, t) && !enif_is_list(env, t) &&
+        !enif_is_tuple(env, t);
 }
 
 
