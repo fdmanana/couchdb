@@ -28,6 +28,21 @@ ICU_LOCAL_LIBS=-licuuc -licudata -licui18n
 endif
 
 couchprivlib_LTLIBRARIES = couch_icu_driver.la
+if USE_OTP_NIFS
+couchprivlib_LTLIBRARIES += couch_ejson_compare.la
+COUCH_EJSON_COMPARE_SRCS = \
+	couch_ejson_compare/erl_nif_compat.h \
+	couch_ejson_compare/couch_ejson_compare.c
+
+couch_ejson_compare_la_SOURCES = $(COUCH_EJSON_COMPARE_SRCS)
+couch_ejson_compare_la_CFLAGS = -D_BSD_SOURCE $(ICU_LOCAL_FLAGS)
+couch_ejson_compare_la_LDFLAGS = -module -avoid-version $(ICU_LOCAL_FLAGS)
+couch_ejson_compare_la_LIBADD = $(ICU_LOCAL_LIBS)
+
+if WINDOWS
+couch_ejson_compare_la_LDFLAGS += -no-undefined
+endif
+endif
 couch_icu_driver_la_SOURCES = icu_driver/couch_icu_driver.c
 couch_icu_driver_la_LDFLAGS = -module -avoid-version $(ICU_LOCAL_FLAGS)
 couch_icu_driver_la_CFLAGS = $(ICU_LOCAL_FLAGS)
@@ -76,6 +91,11 @@ install-data-hook:
 	    rm -f "$(DESTDIR)$(couchprivlibdir)/couch_icu_driver.so"; \
 	    cd "$(DESTDIR)$(couchprivlibdir)" && \
 	        $(LN_S) couch_icu_driver couch_icu_driver.so; \
+	fi
+	if test -f "$(DESTDIR)$(couchprivlibdir)/couch_ejson_compare_nif"; then \
+	    rm -f "$(DESTDIR)$(couchprivlibdir)/couch_ejson_compare_nif.so"; \
+	    cd "$(DESTDIR)$(couchprivlibdir)" && \
+	        $(LN_S) couch_ejson_compare_nif couch_ejson_compare_nif.so; \
 	fi
 if WINDOWS
 	$(INSTALL) $(ICU_LOCAL_BIN)/icuuc42.dll $(bindir)
