@@ -21,13 +21,12 @@ static ERL_NIF_TERM ATOM_TRUE;
 static ERL_NIF_TERM ATOM_FALSE;
 static ERL_NIF_TERM ATOM_NULL;
 
-static UCollator* coll = NULL;
 
-static inline int less_json(ErlNifEnv*, ERL_NIF_TERM, ERL_NIF_TERM);
+static inline int less_json(ErlNifEnv*, UCollator*, ERL_NIF_TERM, ERL_NIF_TERM);
 static inline int atom_sort_order(ERL_NIF_TERM);
-static inline int compare_strings(ErlNifBinary, ErlNifBinary);
-static inline int compare_lists(ErlNifEnv*, ERL_NIF_TERM, ERL_NIF_TERM);
-static inline int compare_props(ErlNifEnv*, ERL_NIF_TERM, ERL_NIF_TERM);
+static inline int compare_strings(UCollator*, ErlNifBinary, ErlNifBinary);
+static inline int compare_lists(ErlNifEnv*, UCollator*, ERL_NIF_TERM, ERL_NIF_TERM);
+static inline int compare_props(ErlNifEnv*, UCollator*, ERL_NIF_TERM, ERL_NIF_TERM);
 static inline int term_is_number(ErlNifEnv*, ERL_NIF_TERM);
 
 
@@ -35,7 +34,17 @@ static inline int term_is_number(ErlNifEnv*, ERL_NIF_TERM);
 static ERL_NIF_TERM
 less_json_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 {
-    int result = less_json(env, argv[0], argv[1]);
+    UErrorCode status = U_ZERO_ERROR;
+    UCollator* coll = ucol_open("", &status);
+    int result;
+
+    if (U_FAILURE(status)) {
+        /* Not perfect, but it's not the most common case hopefully. */
+        return enif_make_badarg(env);
+    }
+
+    result = less_json(env, coll, argv[0], argv[1]);
+    ucol_close(coll);
 
     return result == COMP_ERROR ? enif_make_badarg(env) : enif_make_int(env, result);
 }
@@ -46,7 +55,7 @@ less_json_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
  * Not an issue for now as view keys are normally not very deep structures.
  */
 static int
-less_json(ErlNifEnv* env, ERL_NIF_TERM a, ERL_NIF_TERM b)
+less_json(ErlNifEnv* env, UCollator* coll, ERL_NIF_TERM a, ERL_NIF_TERM b)
 {
     int aIsAtom, bIsAtom;
     int aIsBin, bIsBin;
@@ -113,7 +122,7 @@ less_json(ErlNifEnv* env, ERL_NIF_TERM a, ERL_NIF_TERM b)
             enif_inspect_binary(env, a, &binA);
             enif_inspect_binary(env, b, &binB);
 
-            return compare_strings(binA, binB);
+            return compare_strings(coll, binA, binB);
         }
 
         return -1;
@@ -128,7 +137,7 @@ less_json(ErlNifEnv* env, ERL_NIF_TERM a, ERL_NIF_TERM b)
 
     if (aIsList) {
         if (bIsList) {
-            return compare_lists(env, a, b);
+            return compare_lists(env, coll, a, b);
         }
 
         return -1;
@@ -152,7 +161,7 @@ less_json(ErlNifEnv* env, ERL_NIF_TERM a, ERL_NIF_TERM b)
         return COMP_ERROR;
     }
 
-    return compare_props(env, aProps[0], bProps[0]);
+    return compare_props(env, coll, aProps[0], bProps[0]);
 }
 
 
@@ -181,7 +190,7 @@ term_is_number(ErlNifEnv* env, ERL_NIF_TERM t)
 
 
 static inline int
-compare_lists(ErlNifEnv* env, ERL_NIF_TERM a, ERL_NIF_TERM b)
+compare_lists(ErlNifEnv* env, UCollator* coll, ERL_NIF_TERM a, ERL_NIF_TERM b)
 {
     ERL_NIF_TERM headA, tailA;
     ERL_NIF_TERM headB, tailB;
@@ -202,17 +211,17 @@ compare_lists(ErlNifEnv* env, ERL_NIF_TERM a, ERL_NIF_TERM b)
         return 1;
     }
 
-    result = less_json(env, headA, headB);
+    result = less_json(env, coll, headA, headB);
     if (result == COMP_ERROR || result != 0) {
         return result;
     }
 
-    return compare_lists(env, tailA, tailB);
+    return compare_lists(env, coll, tailA, tailB);
 }
 
 
 static inline int
-compare_props(ErlNifEnv* env, ERL_NIF_TERM a, ERL_NIF_TERM b)
+compare_props(ErlNifEnv* env, UCollator* coll, ERL_NIF_TERM a, ERL_NIF_TERM b)
 {
     ERL_NIF_TERM headA, tailA;
     ERL_NIF_TERM headB, tailB;
@@ -250,24 +259,24 @@ compare_props(ErlNifEnv* env, ERL_NIF_TERM a, ERL_NIF_TERM b)
         return COMP_ERROR;
     }
 
-    keyCompResult = compare_strings(keyA, keyB);
+    keyCompResult = compare_strings(coll, keyA, keyB);
 
     if (keyCompResult == COMP_ERROR || keyCompResult != 0) {
         return keyCompResult;
     }
 
-    valueCompResult = less_json(env, aKV[1], bKV[1]);
+    valueCompResult = less_json(env, coll, aKV[1], bKV[1]);
 
     if (valueCompResult == COMP_ERROR || valueCompResult != 0) {
         return valueCompResult;
     }
 
-    return compare_props(env, tailA, tailB);
+    return compare_props(env, coll, tailA, tailB);
 }
 
 
 static inline int
-compare_strings(ErlNifBinary a, ErlNifBinary b)
+compare_strings(UCollator* coll, ErlNifBinary a, ErlNifBinary b)
 {
     UErrorCode status = U_ZERO_ERROR;
     UCharIterator iterA, iterB;
@@ -295,14 +304,6 @@ compare_strings(ErlNifBinary a, ErlNifBinary b)
 static int
 on_load(ErlNifEnv* env, void** priv, ERL_NIF_TERM info)
 {
-    UErrorCode status = U_ZERO_ERROR;
-
-    coll = ucol_open("", &status);
-
-    if (U_FAILURE(status)) {
-        return 1;
-    }
-
     ATOM_TRUE = enif_make_atom(env, "true");
     ATOM_FALSE = enif_make_atom(env, "false");
     ATOM_NULL = enif_make_atom(env, "null");
@@ -314,9 +315,6 @@ on_load(ErlNifEnv* env, void** priv, ERL_NIF_TERM info)
 static void
 on_unload(ErlNifEnv* env, void* priv_data)
 {
-    if (coll != NULL) {
-        ucol_close(coll);
-    }
 }
 
 
