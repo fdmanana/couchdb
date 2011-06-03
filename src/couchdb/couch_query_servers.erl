@@ -497,7 +497,6 @@ proc_with_ddoc(DDoc, DDocKey, LangProcs) ->
             {ok, SmartProc}
     end.
 
-
 proc_prompt(Proc, Args) ->
      case proc_prompt_raw(Proc, Args) of
      {json, Json} ->
