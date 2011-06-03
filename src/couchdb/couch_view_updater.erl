@@ -39,7 +39,6 @@ update(Owner, Group) ->
     {ok, WriteQueue} = couch_work_queue:new(
         [{max_size, 100000}, {max_items, 500}]),
     Self = self(),
-
     spawn_link(fun() ->
         do_maps(add_query_server(Group), MapQueue, WriteQueue)
     end),
