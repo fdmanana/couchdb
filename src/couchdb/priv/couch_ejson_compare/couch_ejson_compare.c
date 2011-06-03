@@ -22,31 +22,47 @@ static ERL_NIF_TERM ATOM_FALSE;
 static ERL_NIF_TERM ATOM_NULL;
 
 
-static inline int less_json(ErlNifEnv*, UCollator*, ERL_NIF_TERM, ERL_NIF_TERM);
+static inline int less_json(ErlNifEnv*, UCollator**, ERL_NIF_TERM, ERL_NIF_TERM);
 static inline int atom_sort_order(ERL_NIF_TERM);
-static inline int compare_strings(UCollator*, ErlNifBinary, ErlNifBinary);
-static inline int compare_lists(ErlNifEnv*, UCollator*, ERL_NIF_TERM, ERL_NIF_TERM);
-static inline int compare_props(ErlNifEnv*, UCollator*, ERL_NIF_TERM, ERL_NIF_TERM);
+static inline int compare_strings(UCollator**, ErlNifBinary, ErlNifBinary);
+static inline int compare_lists(ErlNifEnv*, UCollator**, ERL_NIF_TERM, ERL_NIF_TERM);
+static inline int compare_props(ErlNifEnv*, UCollator**, ERL_NIF_TERM, ERL_NIF_TERM);
 static inline int term_is_number(ErlNifEnv*, ERL_NIF_TERM);
+static inline UCollator* getCollator(UCollator *);
 
 
 
 static ERL_NIF_TERM
 less_json_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 {
-    UErrorCode status = U_ZERO_ERROR;
-    UCollator* coll = ucol_open("", &status);
+    UCollator* coll = NULL;
     int result;
 
-    if (U_FAILURE(status)) {
-        /* Not perfect, but it's not the most common case hopefully. */
-        return enif_make_badarg(env);
+    result = less_json(env, &coll, argv[0], argv[1]);
+
+    if (coll != NULL) {
+        ucol_close(coll);
     }
 
-    result = less_json(env, coll, argv[0], argv[1]);
-    ucol_close(coll);
-
     return result == COMP_ERROR ? enif_make_badarg(env) : enif_make_int(env, result);
+}
+
+
+static inline UCollator*
+getCollator(UCollator *collIn)
+{
+    if (collIn != NULL) {
+        return collIn;
+    } else {
+        UErrorCode status = U_ZERO_ERROR;
+        UCollator* coll = ucol_open("", &status);
+
+        if (U_FAILURE(status)) {
+            return NULL;
+        }
+
+        return coll;
+    }
 }
 
 
@@ -55,7 +71,7 @@ less_json_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
  * Not an issue for now as view keys are normally not very deep structures.
  */
 static int
-less_json(ErlNifEnv* env, UCollator* coll, ERL_NIF_TERM a, ERL_NIF_TERM b)
+less_json(ErlNifEnv* env, UCollator** coll, ERL_NIF_TERM a, ERL_NIF_TERM b)
 {
     int aIsAtom, bIsAtom;
     int aIsBin, bIsBin;
@@ -190,7 +206,7 @@ term_is_number(ErlNifEnv* env, ERL_NIF_TERM t)
 
 
 static inline int
-compare_lists(ErlNifEnv* env, UCollator* coll, ERL_NIF_TERM a, ERL_NIF_TERM b)
+compare_lists(ErlNifEnv* env, UCollator** coll, ERL_NIF_TERM a, ERL_NIF_TERM b)
 {
     ERL_NIF_TERM headA, tailA;
     ERL_NIF_TERM headB, tailB;
@@ -221,7 +237,7 @@ compare_lists(ErlNifEnv* env, UCollator* coll, ERL_NIF_TERM a, ERL_NIF_TERM b)
 
 
 static inline int
-compare_props(ErlNifEnv* env, UCollator* coll, ERL_NIF_TERM a, ERL_NIF_TERM b)
+compare_props(ErlNifEnv* env, UCollator** coll, ERL_NIF_TERM a, ERL_NIF_TERM b)
 {
     ERL_NIF_TERM headA, tailA;
     ERL_NIF_TERM headB, tailB;
@@ -276,12 +292,18 @@ compare_props(ErlNifEnv* env, UCollator* coll, ERL_NIF_TERM a, ERL_NIF_TERM b)
 
 
 static inline int
-compare_strings(UCollator* coll, ErlNifBinary a, ErlNifBinary b)
+compare_strings(UCollator** collIn, ErlNifBinary a, ErlNifBinary b)
 {
     UErrorCode status = U_ZERO_ERROR;
     UCharIterator iterA, iterB;
     int result;
+    UCollator* coll = getCollator(*collIn);
 
+    if (coll == NULL) {
+        return COMP_ERROR;
+    }
+
+    *collIn = coll;
     uiter_setUTF8(&iterA, a.data, a.size);
     uiter_setUTF8(&iterB, b.data, b.size);
 
