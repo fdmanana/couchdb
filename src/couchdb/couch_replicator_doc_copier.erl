@@ -36,6 +36,12 @@
     start_db_compaction_notifier/2,
     stop_db_compaction_notifier/1
 ]).
+-import(couch_util, [
+    to_binary/1,
+    get_value/2,
+    get_value/3
+]).
+
 
 -record(batch, {
     docs = [],
@@ -350,7 +356,7 @@ fetch_doc(Source, {Id, Revs, PAs, _Seq}, DocHandler, Acc) ->
 local_doc_handler({ok, Doc}, {Target, DocList, W, F}) ->
     case batch_doc(Doc) of
     true ->
-        {Target, [Doc | DocList], W, F};
+        {ok, {Target, [Doc | DocList], W, F}};
     false ->
         ?LOG_DEBUG("Worker flushing doc with attachments", []),
         Target2 = open_db(Target),
@@ -358,18 +364,18 @@ local_doc_handler({ok, Doc}, {Target, DocList, W, F}) ->
         close_db(Target2),
         case Success of
         true ->
-            {Target, DocList, W + 1, F};
+            {ok, {Target, DocList, W + 1, F}};
         false ->
-            {Target, DocList, W, F + 1}
+            {ok, {Target, DocList, W, F + 1}}
         end
     end;
 local_doc_handler(_, Acc) ->
-    Acc.
+    {ok, Acc}.
 
 
 remote_doc_handler({ok, #doc{atts = []} = Doc}, {Parent, _} = Acc) ->
     ok = gen_server:call(Parent, {batch_doc, Doc}, infinity),
-    Acc;
+    {ok, Acc};
 remote_doc_handler({ok, Doc}, {Parent, Target} = Acc) ->
     % Immediately flush documents with attachments received from a remote
     % source. The data property of each attachment is a function that starts
@@ -380,9 +386,14 @@ remote_doc_handler({ok, Doc}, {Parent, Target} = Acc) ->
     Success = (flush_doc(Target2, Doc) =:= ok),
     ok = gen_server:call(Parent, {doc_flushed, Success}, infinity),
     close_db(Target2),
-    Acc;
+    case Success of
+    true ->
+        {ok, Acc};
+    false ->
+        {skip, Acc}
+    end;
 remote_doc_handler(_, Acc) ->
-    Acc.
+    {ok, Acc}.
 
 
 spawn_writer(Target, #batch{docs = DocList, size = Size}) ->
@@ -485,15 +496,15 @@ flush_docs(Target, DocList) ->
         Target, DocList, [delay_commit], replicated_changes),
     DbUri = couch_api_wrap:db_uri(Target),
     lists:foreach(
-        fun({[ {<<"id">>, Id}, {<<"error">>, <<"unauthorized">>} ]}) ->
-                ?LOG_ERROR("Replicator: unauthorized to write document"
-                    " `~s` to `~s`", [Id, DbUri]);
-            (_) ->
-                ok
+        fun({Props}) ->
+            ?LOG_ERROR("Replicator: couldn't write document `~s`, revision `~s`,"
+                " to target database `~s`. Error: `~s`, reason: `~s`.",
+                [get_value(id, Props, ""), get_value(rev, Props, ""), DbUri,
+                    get_value(error, Props, ""), get_value(reason, Props, "")])
         end, Errors),
     {length(DocList) - length(Errors), length(Errors)}.
 
-flush_doc(Target, #doc{id = Id} = Doc) ->
+flush_doc(Target, #doc{id = Id, revs = {Pos, [RevId | _]}} = Doc) ->
     try couch_api_wrap:update_doc(Target, Doc, [], replicated_changes) of
     {ok, _} ->
         ok;
@@ -502,8 +513,16 @@ flush_doc(Target, #doc{id = Id} = Doc) ->
             [Id, couch_api_wrap:db_uri(Target), couch_util:to_binary(Error)]),
         Error
     catch
-    throw:{unauthorized, _} ->
-        ?LOG_ERROR("Replicator: unauthorized to write document `~s` to `~s`",
-            [Id, couch_api_wrap:db_uri(Target)]),
-        {error, unauthorized}
+    throw:{Error, Reason} ->
+        ?LOG_ERROR("Replicator: couldn't write document `~s`, revision `~s`,"
+            " to target database `~s`. Error: `~s`, reason: `~s`.",
+            [Id, couch_doc:rev_to_str({Pos, RevId}),
+                couch_api_wrap:db_uri(Target), to_binary(Error), to_binary(Reason)]),
+        {error, Error};
+    Tag:Err ->
+        ?LOG_ERROR("Replicator: couldn't write document `~s`, revision `~s`,"
+            " to target database `~s`. Error: `~s`.",
+            [Id, couch_doc:rev_to_str({Pos, RevId}),
+                couch_api_wrap:db_uri(Target), to_binary({Tag, Err})]),
+        {error, Err}
     end.
