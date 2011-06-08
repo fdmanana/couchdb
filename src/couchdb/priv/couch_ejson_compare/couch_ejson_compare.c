@@ -25,7 +25,7 @@ static UCollator* coll = NULL;
 static ErlNifMutex* collMutex = NULL;
 
 static inline int less_json(ErlNifEnv*, ERL_NIF_TERM, ERL_NIF_TERM);
-static inline int atom_sort_order(ERL_NIF_TERM);
+static inline int atom_sort_order(ErlNifEnv*, ERL_NIF_TERM);
 static inline int compare_strings(ErlNifBinary, ErlNifBinary);
 static inline int compare_lists(ErlNifEnv*, ERL_NIF_TERM, ERL_NIF_TERM);
 static inline int compare_props(ErlNifEnv*, ERL_NIF_TERM, ERL_NIF_TERM);
@@ -63,11 +63,11 @@ less_json(ErlNifEnv* env, ERL_NIF_TERM a, ERL_NIF_TERM b)
         if (bIsAtom) {
             int aSortOrd, bSortOrd;
 
-            if ((aSortOrd = atom_sort_order(a)) == -1) {
+            if ((aSortOrd = atom_sort_order(env, a)) == -1) {
                 return COMP_ERROR;
             }
 
-            if ((bSortOrd = atom_sort_order(b)) == -1) {
+            if ((bSortOrd = atom_sort_order(env, b)) == -1) {
                 return COMP_ERROR;
             }
 
@@ -86,7 +86,7 @@ less_json(ErlNifEnv* env, ERL_NIF_TERM a, ERL_NIF_TERM b)
 
     if (aIsNumber) {
         if (bIsNumber) {
-            int result = enif_compare(a, b);
+            int result = enif_compare_compat(env, a, b);
 
             if (result < 0) {
                 return -1;
@@ -158,13 +158,13 @@ less_json(ErlNifEnv* env, ERL_NIF_TERM a, ERL_NIF_TERM b)
 
 
 static inline int
-atom_sort_order(ERL_NIF_TERM a)
+atom_sort_order(ErlNifEnv* env, ERL_NIF_TERM a)
 {
-    if (enif_compare(a, ATOM_NULL) == 0) {
+    if (enif_compare_compat(env, a, ATOM_NULL) == 0) {
         return 1;
-    } else if (enif_compare(a, ATOM_FALSE) == 0) {
+    } else if (enif_compare_compat(env, a, ATOM_FALSE) == 0) {
         return 2;
-    } else if (enif_compare(a, ATOM_TRUE) == 0) {
+    } else if (enif_compare_compat(env, a, ATOM_TRUE) == 0) {
         return 3;
     }
 

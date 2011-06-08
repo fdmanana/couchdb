@@ -57,6 +57,8 @@ extern "C" {
 #define enif_make_string_compat(E, B, Enc) \
     enif_make_string(E, B)
 
+#define enif_compare_compat enif_compare
+
 #endif /* R13B03 */
 
 
@@ -74,6 +76,7 @@ extern "C" {
 #define enif_priv_data_compat enif_priv_data
 #define enif_make_string_compat enif_make_string
 #define enif_make_uint_compat enif_make_uint
+#define enif_compare_compat enif_compare
 
 #endif /* R13B04 */
 
@@ -111,6 +114,9 @@ extern "C" {
 #define enif_priv_data_compat enif_priv_data
 #define enif_make_string_compat enif_make_string
 #define enif_make_uint_compat enif_make_uint
+
+#define enif_compare_compat(E, A, B) \
+    enif_compare(A, B)
 
 #endif  /* R14 and future releases */
 
