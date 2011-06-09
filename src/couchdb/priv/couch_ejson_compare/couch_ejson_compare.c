@@ -286,12 +286,12 @@ compare_strings(ErlNifBinary a, ErlNifBinary b)
     }
 
     if (result < 0) {
-       return -1; // a < b
+       return -1;
     } else if (result > 0) {
-       return 1; // a > b
+       return 1;
     }
 
-    return 0; // a == b
+    return 0;
 }
 
 
