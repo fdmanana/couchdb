@@ -91,8 +91,7 @@ source_files = \
     couch_view_group.erl \
     couch_db_updater.erl \
     couch_work_queue.erl \
-    json_stream_parse.erl \
-    couch_internal_load_gen.erl
+    json_stream_parse.erl
 
 EXTRA_DIST = $(source_files) couch_api_wrap.hrl couch_db.hrl couch_js_functions.hrl couch_replicator.hrl
 
@@ -162,8 +161,7 @@ compiled_files = \
     couch_view_group.beam \
     couch_db_updater.beam \
     couch_work_queue.beam \
-    json_stream_parse.beam \
-    couch_internal_load_gen.beam
+    json_stream_parse.beam
 
 # doc_base = \
 #     erlang.png \
