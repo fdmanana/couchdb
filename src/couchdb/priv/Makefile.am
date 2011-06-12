@@ -20,13 +20,6 @@ EXTRA_DIST = \
 
 CLEANFILES = stat_descriptions.cfg
 
-ICU_LOCAL_FLAGS = $(ICU_LOCAL_CFLAGS) $(ICU_LOCAL_LDFLAGS)
-if WINDOWS
-ICU_LOCAL_LIBS=-licuuc -licudt -licuin
-else
-ICU_LOCAL_LIBS=-licuuc -licudata -licui18n
-endif
-
 couchprivlib_LTLIBRARIES = couch_icu_driver.la
 if USE_OTP_NIFS
 couchprivlib_LTLIBRARIES += couch_ejson_compare.la
@@ -44,9 +37,9 @@ couch_ejson_compare_la_LDFLAGS += -no-undefined
 endif
 endif
 couch_icu_driver_la_SOURCES = icu_driver/couch_icu_driver.c
-couch_icu_driver_la_LDFLAGS = -module -avoid-version $(ICU_LOCAL_FLAGS)
-couch_icu_driver_la_CFLAGS = $(ICU_LOCAL_FLAGS)
-couch_icu_driver_la_LIBADD = $(ICU_LOCAL_LIBS)
+couch_icu_driver_la_LDFLAGS = -module -avoid-version
+couch_icu_driver_la_CFLAGS = $(ICU_CFLAGS) $(ERLANG_FLAGS)
+couch_icu_driver_la_LIBADD = $(ICU_LIBS)
 
 if WINDOWS
 couch_icu_driver_la_LDFLAGS += -no-undefined
@@ -61,8 +54,8 @@ COUCHJS_SRCS = \
 
 locallibbin_PROGRAMS = couchjs
 couchjs_SOURCES = $(COUCHJS_SRCS)
-couchjs_CFLAGS = -D_BSD_SOURCE $(CURL_CFLAGS)
-couchjs_LDADD = $(CURL_LIBS) @JSLIB@
+couchjs_CFLAGS = -D_BSD_SOURCE $(CURL_CFLAGS) $(JS_CFLAGS)
+couchjs_LDADD = $(CURL_LIBS) $(JS_LIBS)
 
 couchpriv_DATA = stat_descriptions.cfg
 couchpriv_PROGRAMS = couchspawnkillable
@@ -98,9 +91,9 @@ install-data-hook:
 	        $(LN_S) couch_ejson_compare_nif couch_ejson_compare_nif.so; \
 	fi
 if WINDOWS
-	$(INSTALL) $(ICU_LOCAL_BIN)/icuuc42.dll $(bindir)
-	$(INSTALL) $(ICU_LOCAL_BIN)/icudt42.dll $(bindir)
-	$(INSTALL) $(ICU_LOCAL_BIN)/icuin42.dll $(bindir)
+	$(INSTALL) $(ICU_BIN)/icuuc42.dll $(bindir)
+	$(INSTALL) $(ICU_BIN)/icudt42.dll $(bindir)
+	$(INSTALL) $(ICU_BIN)/icuin42.dll $(bindir)
 	$(INSTALL) $(JS_LIB_BINARY) $(bindir)
 	$(INSTALL) .libs/couchspawnkillable.exe \
 		"$(DESTDIR)$(couchprivdir)/couchspawnkillable.exe"
