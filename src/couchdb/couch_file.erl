@@ -156,7 +156,6 @@ pread_iolist(Fd, Pos) ->
         Error
     end.
 
-
 %%----------------------------------------------------------------------
 %% Purpose: The length of a file, in bytes.
 %% Returns: {ok, Bytes}

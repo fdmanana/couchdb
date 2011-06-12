@@ -92,6 +92,7 @@ test_kvs(KeyValues) ->
     {ok, Btree3} = couch_btree:add_remove(Btree2, [], Keys),
     etap:ok(test_btree(Btree3, []),
         "Removing all keys at once returns an empty btree."),
+
     etap:is(0, couch_btree:size(Btree3),
             "After removing all keys btree size is 0."),
 

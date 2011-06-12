@@ -173,8 +173,6 @@ add_remove(Bt, InsertKeyValues, RemoveKeys) ->
     {ok, [], Bt2} = query_modify(Bt, [], InsertKeyValues, RemoveKeys),
     {ok, Bt2}.
 
-
-
 query_modify(Bt, LookupKeys, InsertValues, RemoveKeys) ->
     #btree{root=Root} = Bt,
     InsertActions = lists:map(
@@ -350,7 +348,6 @@ modify_node(Bt, RootPointerInfo, Actions, QueryOutput, Acc) ->
         {ok, ResultList, Bt3} = write_node(Bt2, NodeType, NewNodeList),
         {ok, ResultList, QueryOutput2, Acc2, Bt3}
     end.
-
 
 reduce_node(#btree{reduce=nil}, _NodeType, _NodeList) ->
     [];
