@@ -16,22 +16,18 @@ couchprivlibdir = $(couchlibdir)/priv/lib
 
 EXTRA_DIST = \
 	spawnkillable/couchspawnkillable.sh \
-	stat_descriptions.cfg.in
+	stat_descriptions.cfg.in \
+	couch_ejson_compare/erl_nif_compat.h
 
 CLEANFILES = stat_descriptions.cfg
 
 couchprivlib_LTLIBRARIES = couch_icu_driver.la
 if USE_OTP_NIFS
 couchprivlib_LTLIBRARIES += couch_ejson_compare.la
-COUCH_EJSON_COMPARE_SRCS = \
-	couch_ejson_compare/erl_nif_compat.h \
-	couch_ejson_compare/couch_ejson_compare.c
-
-couch_ejson_compare_la_SOURCES = $(COUCH_EJSON_COMPARE_SRCS)
-couch_ejson_compare_la_CFLAGS = -D_BSD_SOURCE $(ICU_LOCAL_FLAGS)
-couch_ejson_compare_la_LDFLAGS = -module -avoid-version $(ICU_LOCAL_FLAGS)
-couch_ejson_compare_la_LIBADD = $(ICU_LOCAL_LIBS)
-
+couch_ejson_compare_la_SOURCES = couch_ejson_compare/couch_ejson_compare.c
+couch_ejson_compare_la_CFLAGS = -D_BSD_SOURCE $(ICU_CFLAGS) $(ERLANG_FLAGS)
+couch_ejson_compare_la_LDFLAGS = -module -avoid-version
+couch_ejson_compare_la_LIBADD = $(ICU_LIBS)
 if WINDOWS
 couch_ejson_compare_la_LDFLAGS += -no-undefined
 endif

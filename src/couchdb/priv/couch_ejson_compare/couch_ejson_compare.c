@@ -1,14 +1,16 @@
-// Licensed under the Apache License, Version 2.0 (the "License"); you may not
-// use this file except in compliance with the License. You may obtain a copy of
-// the License at
-//
-//   http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
-// WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
-// License for the specific language governing permissions and limitations under
-// the License.
+/**
+ * Licensed under the Apache License, Version 2.0 (the "License"); you may not
+ * use this file except in compliance with the License. You may obtain a copy of
+ * the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+ * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+ * License for the specific language governing permissions and limitations under
+ * the License.
+ */
 
 #include <stdio.h>
 #include "erl_nif_compat.h"
@@ -24,16 +26,19 @@ static ERL_NIF_TERM ATOM_NULL;
 static UCollator* coll = NULL;
 static ErlNifMutex* collMutex = NULL;
 
-static inline int less_json(ErlNifEnv*, ERL_NIF_TERM, ERL_NIF_TERM);
-static inline int atom_sort_order(ErlNifEnv*, ERL_NIF_TERM);
-static inline int compare_strings(ErlNifBinary, ErlNifBinary);
-static inline int compare_lists(ErlNifEnv*, ERL_NIF_TERM, ERL_NIF_TERM);
-static inline int compare_props(ErlNifEnv*, ERL_NIF_TERM, ERL_NIF_TERM);
-static inline int term_is_number(ErlNifEnv*, ERL_NIF_TERM);
+static ERL_NIF_TERM less_json_nif(ErlNifEnv*, int, const ERL_NIF_TERM []);
+static int on_load(ErlNifEnv*, void**, ERL_NIF_TERM);
+static void on_unload(ErlNifEnv*, void*);
+static __inline int less_json(ErlNifEnv*, ERL_NIF_TERM, ERL_NIF_TERM);
+static __inline int atom_sort_order(ErlNifEnv*, ERL_NIF_TERM);
+static __inline int compare_strings(ErlNifBinary, ErlNifBinary);
+static __inline int compare_lists(ErlNifEnv*, ERL_NIF_TERM, ERL_NIF_TERM);
+static __inline int compare_props(ErlNifEnv*, ERL_NIF_TERM, ERL_NIF_TERM);
+static __inline int term_is_number(ErlNifEnv*, ERL_NIF_TERM);
 
 
 
-static ERL_NIF_TERM
+ERL_NIF_TERM
 less_json_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 {
     int result = less_json(env, argv[0], argv[1]);
@@ -46,7 +51,7 @@ less_json_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
  * TODO: eventually make this function non-recursive (use a stack).
  * Not an issue for now as view keys are normally not very deep structures.
  */
-static int
+int
 less_json(ErlNifEnv* env, ERL_NIF_TERM a, ERL_NIF_TERM b)
 {
     int aIsAtom, bIsAtom;
@@ -157,7 +162,7 @@ less_json(ErlNifEnv* env, ERL_NIF_TERM a, ERL_NIF_TERM b)
 }
 
 
-static inline int
+int
 atom_sort_order(ErlNifEnv* env, ERL_NIF_TERM a)
 {
     if (enif_compare_compat(env, a, ATOM_NULL) == 0) {
@@ -172,7 +177,7 @@ atom_sort_order(ErlNifEnv* env, ERL_NIF_TERM a)
 }
 
 
-static inline int
+int
 term_is_number(ErlNifEnv* env, ERL_NIF_TERM t)
 {
     /* Determination by exclusion of parts. To be used only inside less_json! */
@@ -181,7 +186,7 @@ term_is_number(ErlNifEnv* env, ERL_NIF_TERM t)
 }
 
 
-static inline int
+int
 compare_lists(ErlNifEnv* env, ERL_NIF_TERM a, ERL_NIF_TERM b)
 {
     ERL_NIF_TERM headA, tailA;
@@ -212,7 +217,7 @@ compare_lists(ErlNifEnv* env, ERL_NIF_TERM a, ERL_NIF_TERM b)
 }
 
 
-static inline int
+int
 compare_props(ErlNifEnv* env, ERL_NIF_TERM a, ERL_NIF_TERM b)
 {
     ERL_NIF_TERM headA, tailA;
@@ -267,15 +272,15 @@ compare_props(ErlNifEnv* env, ERL_NIF_TERM a, ERL_NIF_TERM b)
 }
 
 
-static inline int
+int
 compare_strings(ErlNifBinary a, ErlNifBinary b)
 {
     UErrorCode status = U_ZERO_ERROR;
     UCharIterator iterA, iterB;
     int result;
 
-    uiter_setUTF8(&iterA, a.data, a.size);
-    uiter_setUTF8(&iterB, b.data, b.size);
+    uiter_setUTF8(&iterA, (const char *) a.data, (uint32_t) a.size);
+    uiter_setUTF8(&iterB, (const char *) b.data, (uint32_t) b.size);
 
     enif_mutex_lock(collMutex);
     result = ucol_strcollIter(coll, &iterA, &iterB, &status);
@@ -295,7 +300,7 @@ compare_strings(ErlNifBinary a, ErlNifBinary b)
 }
 
 
-static int
+int
 on_load(ErlNifEnv* env, void** priv, ERL_NIF_TERM info)
 {
     UErrorCode status = U_ZERO_ERROR;
@@ -321,7 +326,7 @@ on_load(ErlNifEnv* env, void** priv, ERL_NIF_TERM info)
 }
 
 
-static void
+void
 on_unload(ErlNifEnv* env, void* priv_data)
 {
     if (collMutex != NULL) {
@@ -330,20 +335,6 @@ on_unload(ErlNifEnv* env, void* priv_data)
     if (coll != NULL) {
         ucol_close(coll);
     }
-}
-
-
-static int
-on_reload(ErlNifEnv* env, void** priv, ERL_NIF_TERM info)
-{
-    return 0;
-}
-
-
-static int
-on_upgrade(ErlNifEnv* env, void** priv, void** old_priv, ERL_NIF_TERM info)
-{
-    return 0;
 }
 
 
@@ -356,7 +347,7 @@ static ErlNifFunc nif_functions[] = {
 extern "C" {
 #endif
 
-ERL_NIF_INIT(couch_ejson_compare, nif_functions, &on_load, &on_reload, &on_upgrade, &on_unload);
+ERL_NIF_INIT(couch_ejson_compare, nif_functions, &on_load, NULL, NULL, &on_unload);
 
 #ifdef __cplusplus
 }
