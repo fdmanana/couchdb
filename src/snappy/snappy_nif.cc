@@ -17,6 +17,7 @@
 
 #include <iostream>
 #include <cstring>
+#include <queue>
 
 #include "erl_nif_compat.h"
 #include "google-snappy/snappy.h"
@@ -26,22 +27,133 @@
 #error OTP R13B03 not supported. Upgrade to R13B04 or later.
 #endif
 
-#ifdef __cplusplus
-#define BEGIN_C extern "C" {
-#define END_C }
-#else
-#define BEGIN_C
-#define END_C
-#endif
-
 #define SC_PTR(c) reinterpret_cast<char *>(c)
+
+typedef struct {
+    ErlNifEnv *env;
+    ErlNifBinary data;
+    ErlNifPid pid;
+    ERL_NIF_TERM ref;
+} task_t;
+
+static ERL_NIF_TERM ATOM_OK;
+static ERL_NIF_TERM ATOM_ERROR;
+
+const int QUEUE_SIZE = 100; // # of elements
+
+static ErlNifTid compThreadId;
+static ErlNifTid decompThreadId;
+
+class TaskQueue;
+
+static TaskQueue *compQueue = NULL;
+static TaskQueue *decompQueue = NULL;
+
+
+static void* compressor(void*);
+static void* decompressor(void*);
+static ERL_NIF_TERM compress(task_t*);
+static ERL_NIF_TERM decompress(task_t*);
+static inline ERL_NIF_TERM make_ok(ErlNifEnv*, ERL_NIF_TERM);
+static inline ERL_NIF_TERM make_ok(ErlNifEnv*, ERL_NIF_TERM, ERL_NIF_TERM);
+static inline ERL_NIF_TERM make_error(ErlNifEnv*, const char*);
+static inline ERL_NIF_TERM make_error(ErlNifEnv*, ERL_NIF_TERM, const char*);
+static ERL_NIF_TERM snappy_compress(ErlNifEnv*, int, const ERL_NIF_TERM[]);
+static ERL_NIF_TERM snappy_decompress(ErlNifEnv*, int, const ERL_NIF_TERM[]);
+static ERL_NIF_TERM snappy_uncompressed_length(ErlNifEnv*, int, const ERL_NIF_TERM[]);
+static ERL_NIF_TERM snappy_is_valid(ErlNifEnv*, int, const ERL_NIF_TERM[]);
+static int on_load(ErlNifEnv*, void**, ERL_NIF_TERM);
+static void on_unload(ErlNifEnv*, void*);
+static inline task_t* allocTask(ErlNifEnv*, ERL_NIF_TERM, ERL_NIF_TERM, ERL_NIF_TERM);
+static inline void freeTask(task_t**);
+
+
+class bad_arg { };
+
+
+class TaskQueue
+{
+public:
+    TaskQueue(const unsigned int sz);
+    ~TaskQueue();
+    void queue(task_t*);
+    task_t* dequeue();
+
+private:
+    ErlNifCond *notFull;
+    ErlNifCond *notEmpty;
+    ErlNifMutex *mutex;
+    std::queue<task_t*> q;
+    const unsigned int size;
+};
+
+
+TaskQueue::TaskQueue(const unsigned int sz) : size(sz)
+{
+    notFull = enif_cond_create(const_cast<char *>("not_full_cond"));
+    if (notFull == NULL) {
+        throw std::bad_alloc();
+    }
+    notEmpty = enif_cond_create(const_cast<char *>("not_empty_cond"));
+    if (notEmpty == NULL) {
+        enif_cond_destroy(notFull);
+        throw std::bad_alloc();
+    }
+    mutex = enif_mutex_create(const_cast<char *>("queue_mutex"));
+    if (mutex == NULL) {
+        enif_cond_destroy(notFull);
+        enif_cond_destroy(notEmpty);
+        throw std::bad_alloc();
+    }
+}
+
+TaskQueue::~TaskQueue()
+{
+    enif_cond_destroy(notFull);
+    enif_cond_destroy(notEmpty);
+    enif_mutex_destroy(mutex);
+}
+
+void
+TaskQueue::queue(task_t *t)
+{
+    enif_mutex_lock(mutex);
+
+    if (q.size() >= size) {
+        enif_cond_wait(notFull, mutex);
+    }
+    q.push(t);
+    enif_cond_signal(notEmpty);
+
+    enif_mutex_unlock(mutex);
+}
+
+task_t*
+TaskQueue::dequeue()
+{
+    task_t *t;
+
+    enif_mutex_lock(mutex);
+
+    if (q.empty()) {
+        enif_cond_wait(notEmpty, mutex);
+    }
+    t = q.front();
+    q.pop();
+    enif_cond_signal(notFull);
+
+    enif_mutex_unlock(mutex);
+
+    return t;
+}
+
 
 class SnappyNifSink : public snappy::Sink
 {
     public:
         SnappyNifSink(ErlNifEnv* e);
         ~SnappyNifSink();
-        
+
         void Append(const char* data, size_t n);
         char* GetAppendBuffer(size_t len, char* scratch);
         ErlNifBinary& getBin();
@@ -104,54 +216,64 @@ SnappyNifSink::getBin()
 }
 
 
-static inline ERL_NIF_TERM
-make_atom(ErlNifEnv* env, const char* name)
-{
-    ERL_NIF_TERM ret;
-    if(enif_make_existing_atom_compat(env, name, &ret, ERL_NIF_LATIN1)) {
-        return ret;
-    }
-    return enif_make_atom(env, name);
-}
-
-
-static inline ERL_NIF_TERM
+ERL_NIF_TERM
 make_ok(ErlNifEnv* env, ERL_NIF_TERM mesg)
 {
-    ERL_NIF_TERM ok = make_atom(env, "ok");
-    return enif_make_tuple2(env, ok, mesg);   
+    return enif_make_tuple2(env, ATOM_OK, mesg);
 }
 
 
-static inline ERL_NIF_TERM
+ERL_NIF_TERM
+make_ok(ErlNifEnv* env, ERL_NIF_TERM ref, ERL_NIF_TERM mesg)
+{
+    return enif_make_tuple3(env, ATOM_OK, ref, mesg);
+}
+
+
+ERL_NIF_TERM
 make_error(ErlNifEnv* env, const char* mesg)
 {
-    ERL_NIF_TERM error = make_atom(env, "error");
-    return enif_make_tuple2(env, error, make_atom(env, mesg));
+    return enif_make_tuple2(env, ATOM_ERROR, enif_make_atom(env, mesg));
 }
 
-
-BEGIN_C
+ERL_NIF_TERM
+make_error(ErlNifEnv* env, ERL_NIF_TERM ref, const char* mesg)
+{
+    return enif_make_tuple3(env, ATOM_ERROR, ref, enif_make_atom(env, mesg));
+}
 
 
 ERL_NIF_TERM
 snappy_compress(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 {
-    ErlNifBinary input;
+    task_t *t = NULL;
 
-    if(!enif_inspect_iolist_as_binary(env, argv[0], &input)) {
+    try {
+        t = allocTask(env, argv[0], argv[1], argv[2]);
+    } catch(std::bad_alloc e) {
+        return make_error(env, "insufficient_memory");
+    } catch(bad_arg e) {
         return enif_make_badarg(env);
     }
 
+    compQueue->queue(t);
+
+    return ATOM_OK;
+}
+
+
+ERL_NIF_TERM
+compress(task_t *t)
+{
     try {
-        snappy::ByteArraySource source(SC_PTR(input.data), input.size);
-        SnappyNifSink sink(env);
+        snappy::ByteArraySource source(SC_PTR(t->data.data), t->data.size);
+        SnappyNifSink sink(t->env);
         snappy::Compress(&source, &sink);
-        return make_ok(env, enif_make_binary(env, &sink.getBin()));
+        return make_ok(t->env, t->ref, enif_make_binary(t->env, &sink.getBin()));
     } catch(std::bad_alloc e) {
-        return make_error(env, "insufficient_memory");
+        return make_error(t->env, t->ref, "insufficient_memory");
     } catch(...) {
-        return make_error(env, "unknown");
+        return make_error(t->env, t->ref, "unknown");
     }
 }
 
@@ -159,31 +281,45 @@ snappy_compress(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 ERL_NIF_TERM
 snappy_decompress(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 {
-    ErlNifBinary bin;
-    ErlNifBinary ret;
-    size_t len;
+    task_t *t = NULL;
 
-    if(!enif_inspect_iolist_as_binary(env, argv[0], &bin)) {
+    try {
+        t = allocTask(env, argv[0], argv[1], argv[2]);
+    } catch(std::bad_alloc e) {
+        return make_error(env, "insufficient_memory");
+    } catch(bad_arg e) {
         return enif_make_badarg(env);
     }
 
+    decompQueue->queue(t);
+
+    return ATOM_OK;
+}
+
+
+ERL_NIF_TERM
+decompress(task_t *t)
+{
+    ErlNifBinary ret;
+    size_t len;
+
     try {
-        if(!snappy::GetUncompressedLength(SC_PTR(bin.data), bin.size, &len)) {
-            return make_error(env, "data_not_compressed");
+        if (!snappy::GetUncompressedLength(SC_PTR(t->data.data), t->data.size, &len)) {
+            return make_error(t->env, t->ref, "data_not_compressed");
         }
 
-        if(!enif_alloc_binary_compat(env, len, &ret)) {
-            return make_error(env, "insufficient_memory");
+        if (!enif_alloc_binary_compat(t->env, len, &ret)) {
+            return make_error(t->env, t->ref, "insufficient_memory");
         }
 
-        if(!snappy::RawUncompress(SC_PTR(bin.data), bin.size,
-                                            SC_PTR(ret.data))) {
-            return make_error(env, "corrupted_data");
+        if (!snappy::RawUncompress(SC_PTR(t->data.data), t->data.size,
+                                   SC_PTR(ret.data))) {
+            return make_error(t->env, t->ref, "corrupted_data");
         }
 
-        return make_ok(env, enif_make_binary(env, &ret));
+        return make_ok(t->env, t->ref, enif_make_binary(t->env, &ret));
     } catch(...) {
-        return make_error(env, "unknown");
+        return make_error(t->env, t->ref, "unknown");
     }
 }
 
@@ -220,9 +356,9 @@ snappy_is_valid(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 
     try {
         if(snappy::IsValidCompressedBuffer(SC_PTR(bin.data), bin.size)) {
-            return make_atom(env, "true");
+            return enif_make_atom(env, "true");
         } else {
-            return make_atom(env, "false");
+            return enif_make_atom(env, "false");
         }
     } catch(...) {
         return make_error(env, "unknown");
@@ -233,33 +369,145 @@ snappy_is_valid(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 int
 on_load(ErlNifEnv* env, void** priv, ERL_NIF_TERM info)
 {
+    try {
+        compQueue = new TaskQueue(QUEUE_SIZE);
+        decompQueue = new TaskQueue(QUEUE_SIZE);
+    } catch (std::bad_alloc e) {
+        return 1;
+    }
+
+
+    if (0 != enif_thread_create(const_cast<char*>("compressor"),
+                                &compThreadId, compressor, NULL, NULL)) {
+        delete compQueue;
+        delete decompQueue;
+        compQueue = decompQueue = NULL;
+        return 2;
+    }
+
+    if (0 != enif_thread_create(const_cast<char*>("decompressor"),
+                                &decompThreadId, decompressor, NULL, NULL)) {
+        delete decompQueue;
+        delete decompQueue;
+        compQueue = decompQueue = NULL;
+        return 3;
+    }
+
+    ATOM_OK = enif_make_atom(env, "ok");
+    ATOM_ERROR = enif_make_atom(env, "error");
+
     return 0;
 }
 
 
-int
-on_reload(ErlNifEnv* env, void** priv, ERL_NIF_TERM info)
+void
+on_unload(ErlNifEnv* env, void* priv_data)
 {
-    return 0;
+    void *result = NULL;
+
+    compQueue->queue(NULL);
+    decompQueue->queue(NULL);
+
+    enif_thread_join(compThreadId, &result);
+    enif_thread_join(decompThreadId, &result);
+
+    delete compQueue;
+    delete decompQueue;
+    compQueue = decompQueue = NULL;
 }
 
 
-int
-on_upgrade(ErlNifEnv* env, void** priv, void** old_priv, ERL_NIF_TERM info)
+task_t*
+allocTask(ErlNifEnv* env, ERL_NIF_TERM term, ERL_NIF_TERM pid, ERL_NIF_TERM ref)
 {
-    return 0;
+    task_t *t = static_cast<task_t*>(enif_alloc(sizeof(task_t)));
+    ERL_NIF_TERM copy;
+
+    if (t == NULL) {
+        throw std::bad_alloc();
+    }
+
+    if (!enif_get_local_pid(env, pid, &t->pid)) {
+        enif_free(t);
+        throw bad_arg();
+    }
+
+    t->env = enif_alloc_env();
+    if (t->env == NULL) {
+        enif_free(t);
+        throw std::bad_alloc();
+    }
+
+    copy = enif_make_copy(t->env, term);
+    if (!enif_inspect_iolist_as_binary(t->env, copy, &t->data)) {
+        enif_free_env(t->env);
+        enif_free(t);
+        throw bad_arg();
+    }
+
+    t->ref = enif_make_copy(t->env, ref);
+
+    return t;
+}
+
+
+void
+freeTask(task_t **t)
+{
+    enif_free_env((*t)->env);
+    enif_free(*t);
+    *t = NULL;
+}
+
+
+void*
+compressor(void *arg)
+{
+    while (true) {
+        task_t *t = compQueue->dequeue();
+
+        if (t == NULL) {
+            break;
+        }
+
+        ERL_NIF_TERM resp = compress(t);
+        enif_send(NULL, &t->pid, t->env, resp);
+        freeTask(&t);
+    }
+
+    return NULL;
+}
+
+
+void*
+decompressor(void *arg)
+{
+    while (true) {
+        task_t *t = decompQueue->dequeue();
+
+        if (t == NULL) {
+            break;
+        }
+
+        ERL_NIF_TERM resp = decompress(t);
+        enif_send(NULL, &t->pid, t->env, resp);
+        freeTask(&t);
+    }
+
+    return NULL;
 }
 
 
 static ErlNifFunc nif_functions[] = {
-    {"compress", 1, snappy_compress},
-    {"decompress", 1, snappy_decompress},
+    {"compress", 3, snappy_compress},
+    {"decompress", 3, snappy_decompress},
     {"uncompressed_length", 1, snappy_uncompressed_length},
     {"is_valid", 1, snappy_is_valid}
 };
 
 
-ERL_NIF_INIT(snappy, nif_functions, &on_load, &on_reload, &on_upgrade, NULL);
+extern "C" {
 
+ERL_NIF_INIT(snappy, nif_functions, &on_load, NULL, NULL, &on_unload);
 
-END_C
+}

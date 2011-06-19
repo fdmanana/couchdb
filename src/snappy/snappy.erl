@@ -40,11 +40,11 @@ init() ->
     end.
 
 
-compress(_IoList) ->
+compress(_IoList, _Pid, _Ref) ->
     exit(snappy_nif_not_loaded).
 
 
-decompress(_IoList) ->
+decompress(_IoList, _Pid, _Ref) ->
     exit(snappy_nif_not_loaded).
 
 
@@ -54,3 +54,25 @@ uncompressed_length(_IoList) ->
 
 is_valid(_IoList) ->
     exit(snappy_nif_not_loaded).
+
+
+compress(IoList) ->
+    Ref = make_ref(),
+    ok = compress(IoList, self(), Ref),
+    receive
+    {ok, Ref, Data} ->
+        {ok, Data};
+    {error, Ref, Error} ->
+        {error, Error}
+    end.
+
+
+decompress(IoList) ->
+    Ref = make_ref(),
+    ok = decompress(IoList, self(), Ref),
+    receive
+    {ok, Ref, Data} ->
+        {ok, Data};
+    {error, Ref, Error} ->
+        {error, Error}
+    end.
