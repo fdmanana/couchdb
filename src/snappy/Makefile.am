@@ -46,7 +46,7 @@ CLEANFILES = \
 snappyebin_DATA = \
     $(snappyebin_make_generated_file_list)
 
-if USE_OTP_NIFS
+if BUILD_SNAPPY_NIF
 snappypriv_LTLIBRARIES = snappy_nif.la
 snappy_nif_la_SOURCES = $(snappy_cxx_srcs)
 snappy_nif_la_CXXFLAGS = $(ERLANG_FLAGS)
