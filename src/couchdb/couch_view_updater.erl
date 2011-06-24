@@ -171,8 +171,7 @@ do_writes(Parent, Owner, Group, WriteQueue, InitialBuild) ->
                 InitialBuild),
         case Owner of
         nil -> ok;
-        _ ->
-            ok = gen_server:cast(Owner, {partial_update, Parent, Group2})
+        _ -> ok = gen_server:cast(Owner, {partial_update, Parent, Group2})
         end,
         do_writes(Parent, Owner, Group2, WriteQueue, InitialBuild)
     end.
