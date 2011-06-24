@@ -80,6 +80,7 @@ extern "C" {
 #define enif_make_existing_atom_compat(E, N, R, Enc) \
     enif_make_existing_atom(E, N, R)
 
+
 #endif /* R13B04 */
 
 
