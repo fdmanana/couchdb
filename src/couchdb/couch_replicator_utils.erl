@@ -211,9 +211,9 @@ maybe_add_trailing_slash(Url) ->
 make_options(Props) ->
     Options = lists:ukeysort(1, convert_options(Props)),
     DefWorkers = couch_config:get("replicator", "worker_processes", "4"),
-    DefBatchSize = couch_config:get("replicator", "worker_batch_size", "1000"),
+    DefBatchSize = couch_config:get("replicator", "worker_batch_size", "500"),
     DefConns = couch_config:get("replicator", "http_connections", "20"),
-    DefPipeSize = couch_config:get("replicator", "http_pipeline_size", "50"),
+    DefPipeSize = couch_config:get("replicator", "http_pipeline_size", "1"),
     DefTimeout = couch_config:get("replicator", "connection_timeout", "30000"),
     {ok, DefSocketOptions} = couch_util:parse_term(
         couch_config:get("replicator", "socket_options",
@@ -258,6 +258,8 @@ convert_options([{<<"connection_timeout">>, V} | R]) ->
 convert_options([{<<"socket_options">>, V} | R]) ->
     {ok, SocketOptions} = couch_util:parse_term(V),
     [{socket_options, SocketOptions} | convert_options(R)];
+convert_options([{<<"since_seq">>, V} | R]) ->
+    [{since_seq, V} | convert_options(R)];
 convert_options([_ | R]) -> % skip unknown option
     convert_options(R).
 
