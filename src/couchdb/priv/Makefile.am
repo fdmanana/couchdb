@@ -22,7 +22,7 @@ EXTRA_DIST = \
 CLEANFILES = stat_descriptions.cfg
 
 couchprivlib_LTLIBRARIES = couch_icu_driver.la
-if USE_OTP_NIFS
+if USE_EJSON_COMPARE_NIF
 couchprivlib_LTLIBRARIES += couch_ejson_compare.la
 couch_ejson_compare_la_SOURCES = couch_ejson_compare/couch_ejson_compare.c
 couch_ejson_compare_la_CFLAGS = -D_BSD_SOURCE $(ICU_CFLAGS) $(ERLANG_FLAGS)
