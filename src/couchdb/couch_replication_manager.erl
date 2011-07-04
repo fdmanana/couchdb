@@ -190,6 +190,10 @@ handle_info({'EXIT', From, normal}, #state{rep_start_pids = Pids} = State) ->
     % one of the replication start processes terminated successfully
     {noreply, State#state{rep_start_pids = Pids -- [From]}};
 
+handle_info({'DOWN', _Ref, _, _, _}, State) ->
+    % From a db monitor created by a replication process. Ignore.
+    {noreply, State};
+
 handle_info(Msg, State) ->
     ?LOG_ERROR("Replication manager received unexpected message ~p", [Msg]),
     {stop, {unexpected_msg, Msg}, State}.
@@ -310,8 +314,13 @@ process_update(State, {Change}) ->
         <<"completed">> ->
             replication_complete(DocId),
             State;
-        _ ->
-            State
+        <<"error">> ->
+            case ets:lookup(?DOC_TO_REP, DocId) of
+            [] ->
+                maybe_start_replication(State, DocId, JsonRepDoc);
+            _ ->
+                State
+            end
         end
     end.
 

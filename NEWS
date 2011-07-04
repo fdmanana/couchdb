@@ -23,11 +23,15 @@ This version has not been released yet.
    information URIs.
  * A new replicator implementation that offers more performance
    and configuration options.
+ * Futon's `Status` screen (active tasks) now displays two new task
+   status fields: `Started on` and `Updated on`.
 
 Version 1.1.1
 -------------
 
 This version has not been released yet.
+
+* ETags for views include current sequence if include_docs=true.
 
 Version 1.1.0
 -------------

@@ -52,7 +52,7 @@ admin_user_ctx() -> {user_ctx, #user_ctx{roles=[<<"_admin">>]}}.
 main(_) ->
     test_util:init_code_path(),
 
-    etap:plan(14),
+    etap:plan(15),
     case (catch test()) of
         ok ->
             etap:end_tests();
@@ -101,20 +101,21 @@ test() ->
     %% end boilerplate, start test
 
     ok = couch_config:set("vhosts", "example.com", "/etap-test-db", false),
-    ok = couch_config:set("vhosts", "*.example.com", 
+    ok = couch_config:set("vhosts", "*.example.com",
             "/etap-test-db/_design/doc1/_rewrite", false),
     ok = couch_config:set("vhosts", "example.com/test", "/etap-test-db", false),
-    ok = couch_config:set("vhosts", "example1.com", 
+    ok = couch_config:set("vhosts", "example1.com",
             "/etap-test-db/_design/doc1/_rewrite/", false),
     ok = couch_config:set("vhosts",":appname.:dbname.example1.com",
             "/:dbname/_design/:appname/_rewrite/", false),
     ok = couch_config:set("vhosts", ":dbname.example1.com", "/:dbname", false),
-    
+
     ok = couch_config:set("vhosts", "*.example2.com", "/*", false),
     ok = couch_config:set("vhosts", "*.example2.com/test", "/*", false),
-    ok = couch_config:set("vhosts", "*/test", "/etap-test-db", false), 
-    ok = couch_config:set("vhosts", "*/test1", 
-            "/etap-test-db/_design/doc1/_show/test", false), 
+    ok = couch_config:set("vhosts", "*/test", "/etap-test-db", false),
+    ok = couch_config:set("vhosts", "*/test1",
+            "/etap-test-db/_design/doc1/_show/test", false),
+    ok = couch_config:set("vhosts", "example3.com", "/", false),
 
     %% reload rules
     couch_httpd_vhost:reload(),
@@ -123,21 +124,22 @@ test() ->
     test_vhost_request(),
     test_vhost_request_with_qs(),
     test_vhost_request_with_global(),
-    test_vhost_requested_path(),    
+    test_vhost_requested_path(),
     test_vhost_requested_path_path(),
     test_vhost_request_wildcard(),
     test_vhost_request_replace_var(),
-    test_vhost_request_replace_var1(), 
+    test_vhost_request_replace_var1(),
     test_vhost_request_replace_wildcard(),
     test_vhost_request_path(),
     test_vhost_request_path1(),
     test_vhost_request_path2(),
     test_vhost_request_path3(),
+    test_vhost_request_to_root(),
 
     %% restart boilerplate
     couch_db:close(Db),
     timer:sleep(3000),
-    couch_server_sup:stop(),    
+    couch_server_sup:stop(),
 
     ok.
 
@@ -148,7 +150,7 @@ test_regular_request() ->
               {<<"version">>,_}
             ]} = ejson:decode(Body),
             etap:is(true, true, "should return server info");
-        _Else -> 
+        _Else ->
             etap:is(false, true, <<"ibrowse fail">>)
     end.
 
@@ -158,7 +160,7 @@ test_vhost_request() ->
             {JsonBody} = ejson:decode(Body),
             HasDbNameInfo = proplists:is_defined(<<"db_name">>, JsonBody),
             etap:is(HasDbNameInfo, true, "should return database info");
-        _Else -> 
+        _Else ->
            etap:is(false, true, <<"ibrowse fail">>)
     end.
 
@@ -169,7 +171,7 @@ test_vhost_request_with_qs() ->
             {JsonProps} = ejson:decode(Body),
             HasRevsInfo = proplists:is_defined(<<"_revs_info">>, JsonProps),
             etap:is(HasRevsInfo, true, "should return _revs_info");
-        _Else -> 
+        _Else ->
             etap:is(false, true, <<"ibrowse fail">>)
     end.
 
@@ -179,7 +181,7 @@ test_vhost_request_with_global() ->
         {ok, _, _, Body2} ->
             "<!DOCTYPE" ++ _Foo = Body2,
             etap:is(true, true, "should serve /_utils even inside vhosts");
-        _Else -> 
+        _Else ->
             etap:is(false, true, <<"ibrowse fail">>)
     end.
 
@@ -287,5 +289,15 @@ test_vhost_request_path3() ->
                 <<"/etap-test-db/_design/doc1/_show/test">> -> true;
                 _ -> false
             end, true, <<"path in req ok">>);
+        _Else -> etap:is(false, true, <<"ibrowse fail">>)
+    end.
+
+test_vhost_request_to_root() ->
+    Uri = server(),
+    case ibrowse:send_req(Uri, [], get, [], []) of
+        {ok, _, _, Body} ->
+            {JsonBody} = ejson:decode(Body),
+            HasCouchDBWelcome = proplists:is_defined(<<"couchdb">>, JsonBody),
+            etap:is(HasCouchDBWelcome, true, "should allow redirect to /");
         _Else -> etap:is(false, true, <<"ibrowse fail">>)
     end.
