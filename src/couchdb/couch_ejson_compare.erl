@@ -36,16 +36,14 @@ less(A, B) ->
     try
         less_nif(A, B)
     catch
-    exit:{not_loaded, ?MODULE} ->
-        less_erl(A, B);
     error:badarg ->
         % Maybe the EJSON structure is too deep, fallback to Erlang land.
         less_erl(A, B)
     end.
 
 
-less_nif(_, _) ->
-    exit({not_loaded, ?MODULE}).
+less_nif(A, B) ->
+    less_erl(A, B).
 
 
 less_erl(A,A)                                 -> 0;
