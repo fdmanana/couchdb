@@ -88,6 +88,10 @@ readjson(OsProc) when is_record(OsProc, os_proc) ->
     Line = iolist_to_binary(readline(OsProc)),
     ?LOG_DEBUG("OS Process ~p Output :: ~s", [OsProc#os_proc.port, Line]),
     try
+        % Don't actually parse the whole JSON. Just try to see if it's
+        % a command or a doc map/reduce/filter/show/list/update output.
+        % If it's a command then parse the whole JSON and execute the
+        % command, otherwise return the raw JSON line to the caller.
         pick_command(Line)
     catch
     throw:abort ->
