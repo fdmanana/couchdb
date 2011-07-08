@@ -105,7 +105,7 @@ async_replicate(#rep{id = {BaseId, Ext}, source = Src, target = Tgt} = Rep) ->
     Target = couch_api_wrap:db_uri(Tgt),
     ChildSpec = {
         RepChildId,
-        {gen_server, start_link, [?MODULE, Rep, []]},
+        {gen_server, start_link, [?MODULE, Rep, [{timeout, 20000}]]},
         temporary,
         1,
         worker,
@@ -244,14 +244,11 @@ do_init(#rep{options = Options, id = {BaseId, Ext}} = Rep) ->
         lists:seq(1, RevFindersCount)),
     % This starts the doc copy processes. They fetch documents from the
     % MissingRevsQueue and copy them from the source to the target database.
-    MaxHttpConns = get_value(http_connections, Options),
-    HttpPipeSize = get_value(http_pipeline_size, Options),
-    MaxParallelConns = lists:max(
-        [((MaxHttpConns * HttpPipeSize) div CopiersCount) - 1, 1]),
+    MaxConns = get_value(http_connections, Options),
     Workers = lists:map(
         fun(_) ->
             {ok, Pid} = couch_replicator_doc_copier:start_link(
-                self(), Source, Target, MissingRevsQueue, MaxParallelConns),
+                self(), Source, Target, MissingRevsQueue, MaxConns),
             Pid
         end,
         lists:seq(1, CopiersCount)),
@@ -275,11 +272,11 @@ do_init(#rep{options = Options, id = {BaseId, Ext}} = Rep) ->
     ?LOG_INFO("Replication `~p` is using:~n"
         "~c~p worker processes~n"
         "~ca worker batch size of ~p~n"
-        "~c~p HTTP connections, each with a pipeline size of ~p~n"
+        "~c~p HTTP connections~n"
         "~ca connection timeout of ~p milliseconds~n"
         "~csocket options are: ~s~s",
-        [BaseId ++ Ext, $\t, CopiersCount, $\t, BatchSize, $\t, MaxHttpConns,
-            HttpPipeSize, $\t, get_value(connection_timeout, Options),
+        [BaseId ++ Ext, $\t, CopiersCount, $\t, BatchSize, $\t,
+            MaxConns, $\t, get_value(connection_timeout, Options),
             $\t, io_lib:format("~p", [get_value(socket_options, Options)]),
             case StartSeq of
             ?LOWEST_SEQ ->
@@ -594,16 +591,22 @@ spawn_changes_reader(StartSeq, #httpdb{} = Db, ChangesQueue, Options) ->
     spawn_link(fun() ->
         put(last_seq, StartSeq),
         put(retries_left, Db#httpdb.retries),
+        put(row_ts, 1),
         read_changes(StartSeq, Db#httpdb{retries = 0}, ChangesQueue, Options)
     end);
 spawn_changes_reader(StartSeq, Db, ChangesQueue, Options) ->
-    spawn_link(fun() -> read_changes(StartSeq, Db, ChangesQueue, Options) end).
+    spawn_link(fun() ->
+        put(row_ts, 1),
+        read_changes(StartSeq, Db, ChangesQueue, Options)
+    end).
 
 read_changes(StartSeq, Db, ChangesQueue, Options) ->
     try
         couch_api_wrap:changes_since(Db, all_docs, StartSeq,
             fun(#doc_info{high_seq = Seq} = DocInfo) ->
-                ok = couch_work_queue:queue(ChangesQueue, DocInfo),
+                Ts = get(row_ts),
+                ok = couch_work_queue:queue(ChangesQueue, {Ts, DocInfo}),
+                put(row_ts, Ts + 1),
                 put(last_seq, Seq)
             end, Options),
         couch_work_queue:close(ChangesQueue)
@@ -644,7 +647,7 @@ do_checkpoint(State) ->
         target = Target,
         history = OldHistory,
         start_seq = StartSeq,
-        current_through_seq = NewSeq,
+        current_through_seq = {_Ts, NewSeq} = NewTsSeq,
         source_log = SourceLog,
         target_log = TargetLog,
         rep_starttime = ReplicationStartTime,
@@ -711,7 +714,7 @@ do_checkpoint(State) ->
                 Target, TargetLog#doc{body = NewRepHistory}, target),
             NewState = State#rep_state{
                 checkpoint_history = NewRepHistory,
-                committed_seq = NewSeq,
+                committed_seq = NewTsSeq,
                 source_log = SourceLog#doc{revs={SrcRevPos, [SrcRevId]}},
                 target_log = TargetLog#doc{revs={TgtRevPos, [TgtRevId]}}
             },
