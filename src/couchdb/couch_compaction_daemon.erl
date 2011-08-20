@@ -23,11 +23,6 @@
 -include("couch_db.hrl").
 
 -define(CONFIG_ETS, couch_compaction_daemon_config).
--define(DISK_CHECK_PERIOD, 1).          % minutes
--define(KV_RE,
-    [$^, "\\s*", "([^=]+?)", "\\s*", $=, "\\s*", "([^=]+?)", "\\s*", $$]).
--define(PERIOD_RE,
-    [$^, "([^-]+?)", "\\s*", $-, "\\s*", "([^-]+?)", $$]).
 
 -record(state, {
     loop_pid
