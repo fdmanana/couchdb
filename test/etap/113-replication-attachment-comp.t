@@ -41,8 +41,7 @@ test() ->
     couch_server_sup:start_link(test_util:config_files()),
     put(addr, couch_config:get("httpd", "bind_address", "127.0.0.1")),
     put(port, integer_to_list(mochiweb_socket_server:get(couch_httpd, port))),
-    application:start(inets),
-    ibrowse:start(),
+    {ok, _} = ibrowse:start(),
     timer:sleep(1000),
 
     %
@@ -133,13 +132,12 @@ test() ->
     ok.
 
 put_text_att(DbName) ->
-    {ok, {{_, Code, _}, _Headers, _Body}} = http:request(
+    {ok, Code, _Headers, Body} = ibrowse:send_req(
+        db_url(DbName) ++ "/testdoc1/readme.txt",
+        [{"Content-Type", "text/plain"}],
         put,
-        {db_url(DbName) ++ "/testdoc1/readme.txt", [],
-        "text/plain", test_text_data()},
-        [],
-        [{sync, true}]),
-    etap:is(Code, 201, "Created text attachment"),
+        test_text_data()),
+    etap:is(Code, "201", "Created text attachment"),
     ok.
 
 do_pull_replication(SourceDbName, TargetDbName) ->
@@ -147,13 +145,12 @@ do_pull_replication(SourceDbName, TargetDbName) ->
         {<<"source">>, list_to_binary(db_url(SourceDbName))},
         {<<"target">>, TargetDbName}
     ]},
-    {ok, {{_, Code, _}, _Headers, Body}} = http:request(
+    {ok, Code, _Headers, Body} = ibrowse:send_req(
+        rep_url(),
+        [{"Content-Type", "application/json"}],
         post,
-        {rep_url(), [],
-        "application/json", list_to_binary(couch_util:json_encode(RepObj))},
-        [],
-        [{sync, true}]),
-    etap:is(Code, 200, "Pull replication successfully triggered"),
+        list_to_binary(couch_util:json_encode(RepObj))),
+    etap:is(Code, "200", "Pull replication successfully triggered"),
     Json = couch_util:json_decode(Body),
     RepOk = couch_util:get_nested_json_value(Json, [<<"ok">>]),
     etap:is(RepOk, true, "Pull replication completed with success"),
@@ -164,13 +161,12 @@ do_push_replication(SourceDbName, TargetDbName) ->
         {<<"source">>, SourceDbName},
         {<<"target">>, list_to_binary(db_url(TargetDbName))}
     ]},
-    {ok, {{_, Code, _}, _Headers, Body}} = http:request(
+    {ok, Code, _Headers, Body} = ibrowse:send_req(
+        rep_url(),
+        [{"Content-Type", "application/json"}],
         post,
-        {rep_url(), [],
-        "application/json", list_to_binary(couch_util:json_encode(RepObj))},
-        [],
-        [{sync, true}]),
-    etap:is(Code, 200, "Push replication successfully triggered"),
+        list_to_binary(couch_util:json_encode(RepObj))),
+    etap:is(Code, "200", "Push replication successfully triggered"),
     Json = couch_util:json_decode(Body),
     RepOk = couch_util:get_nested_json_value(Json, [<<"ok">>]),
     etap:is(RepOk, true, "Push replication completed with success"),
@@ -181,63 +177,58 @@ do_local_replication(SourceDbName, TargetDbName) ->
         {<<"source">>, SourceDbName},
         {<<"target">>, TargetDbName}
     ]},
-    {ok, {{_, Code, _}, _Headers, Body}} = http:request(
+    {ok, Code, _Headers, Body} = ibrowse:send_req(
+        rep_url(),
+        [{"Content-Type", "application/json"}],
         post,
-        {rep_url(), [],
-        "application/json", list_to_binary(couch_util:json_encode(RepObj))},
-        [],
-        [{sync, true}]),
-    etap:is(Code, 200, "Local replication successfully triggered"),
+        list_to_binary(couch_util:json_encode(RepObj))),
+    etap:is(Code, "200", "Local replication successfully triggered"),
     Json = couch_util:json_decode(Body),
     RepOk = couch_util:get_nested_json_value(Json, [<<"ok">>]),
     etap:is(RepOk, true, "Local replication completed with success"),
     ok.
 
 check_att_is_compressed(DbName) ->
-    {ok, {{_, Code, _}, Headers, Body}} = http:request(
-        get,
-        {db_url(DbName) ++ "/testdoc1/readme.txt",
-        [{"Accept-Encoding", "gzip"}]},
-        [],
-        [{sync, true}]),
-    etap:is(Code, 200, "HTTP response code for the attachment request is 200"),
-    Gziped = lists:member({"content-encoding", "gzip"}, Headers),
+    {ok, Code, Headers, Body} = ibrowse:send_req(
+        db_url(DbName) ++ "/testdoc1/readme.txt",
+        [{"Accept-Encoding", "gzip"}],
+        get),
+    etap:is(Code, "200", "HTTP response code for the attachment request is 200"),
+    Gziped = lists:member({"Content-Encoding", "gzip"}, Headers),
     etap:is(Gziped, true, "The attachment was received in compressed form"),
-    Uncompressed = binary_to_list(zlib:gunzip(list_to_binary(Body))),
+    Uncompressed = zlib:gunzip(list_to_binary(Body)),
     etap:is(
-        Uncompressed,
+        iolist_to_binary(Uncompressed),
         test_text_data(),
         "The attachment content is valid after decompression at the client side"
     ),
     ok.
 
 check_server_can_decompress_att(DbName) ->
-    {ok, {{_, Code, _}, Headers, Body}} = http:request(
-        get,
-        {db_url(DbName) ++ "/testdoc1/readme.txt", []},
+    {ok, Code, Headers, Body} = ibrowse:send_req(
+        db_url(DbName) ++ "/testdoc1/readme.txt",
         [],
-        [{sync, true}]),
-    etap:is(Code, 200, "HTTP response code for the attachment request is 200"),
-    Gziped = lists:member({"content-encoding", "gzip"}, Headers),
+        get),
+    etap:is(Code, "200", "HTTP response code for the attachment request is 200"),
+    Gziped = lists:member({"Content-Encoding", "gzip"}, Headers),
     etap:is(
         Gziped, false, "The attachment was not received in compressed form"
     ),
     etap:is(
-        Body,
+        iolist_to_binary(Body),
         test_text_data(),
         "The attachment content is valid after server decompression"
     ),
     ok.
 
 check_att_stubs(SourceDbName, TargetDbName) ->
-    {ok, {{_, Code1, _}, _Headers1, Body1}} = http:request(
-        get,
-        {db_url(SourceDbName) ++ "/testdoc1?att_encoding_info=true", []},
+    {ok, Code1, _Headers1, Body1} = ibrowse:send_req(
+        db_url(SourceDbName) ++ "/testdoc1?att_encoding_info=true",
         [],
-        [{sync, true}]),
+        get),
     etap:is(
         Code1,
-        200,
+        "200",
         "HTTP response code is 200 for the source DB doc request"
     ),
     Json1 = couch_util:json_decode(Body1),
@@ -245,14 +236,13 @@ check_att_stubs(SourceDbName, TargetDbName) ->
         Json1,
         [<<"_attachments">>, <<"readme.txt">>]
     ),
-    {ok, {{_, Code2, _}, _Headers2, Body2}} = http:request(
-        get,
-        {db_url(TargetDbName) ++ "/testdoc1?att_encoding_info=true", []},
+    {ok, Code2, _Headers2, Body2} = ibrowse:send_req(
+        db_url(SourceDbName) ++ "/testdoc1?att_encoding_info=true",
         [],
-        [{sync, true}]),
+        get),
     etap:is(
         Code2,
-        200,
+        "200",
         "HTTP response code is 200 for the target DB doc request"
     ),
     Json2 = couch_util:json_decode(Body2),
@@ -311,4 +301,4 @@ rep_url() ->
 
 test_text_data() ->
     {ok, Data} = file:read_file(test_util:source_file("README")),
-    binary_to_list(Data).
+    Data.
