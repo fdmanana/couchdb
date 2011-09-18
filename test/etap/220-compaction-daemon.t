@@ -40,7 +40,7 @@ test() ->
     timer:sleep(1000),
     put(addr, couch_config:get("httpd", "bind_address", "127.0.0.1")),
     put(port, integer_to_list(mochiweb_socket_server:get(couch_httpd, port))),
-    application:start(inets),
+    {ok, _} = ibrowse:start(),
 
     disable_compact_daemon(),
 
@@ -175,13 +175,10 @@ db_url() ->
         binary_to_list(test_db_name()).
 
 query_view() ->
-    {ok, {{_, Code, _}, _Headers, _Body}} = http:request(
-        get,
-        {db_url() ++ "/_design/foo/_view/foo", []},
-        [],
-        [{sync, true}]),
+    {ok, Code, _Headers, _Body} = ibrowse:send_req(
+        db_url() ++ "/_design/foo/_view/foo", [], get),
     case Code of
-    200 ->
+    "200" ->
         ok;
     _ ->
         etap:bail("error querying view")
