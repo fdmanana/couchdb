@@ -24,6 +24,7 @@
     seq,
     prepend,
     filter,
+    changes_sent=false,
     callback,
     user_acc,
     resp_type,
@@ -251,6 +252,7 @@ get_changes_timeout(Args, Callback) ->
     end.
 
 start_sending_changes(_Callback, UserAcc, "continuous") ->
+    put(changes_timeout, now()),
     UserAcc;
 start_sending_changes(Callback, UserAcc, ResponseType) ->
     Callback(start, ResponseType, UserAcc).
@@ -271,6 +273,7 @@ send_changes(Args, Callback, UserAcc, Db, StartSeq, Prepend, FirstRound) ->
         seq = StartSeq,
         prepend = Prepend,
         filter = FilterFun,
+        changes_sent = false,
         callback = Callback,
         user_acc = UserAcc,
         resp_type = ResponseType,
@@ -384,36 +387,41 @@ keep_sending_changes(Args, Callback, UserAcc, Db, StartSeq, Prepend, Timeout,
         Prepend,
         FirstRound),
     #changes_acc{
-        seq = EndSeq, prepend = Prepend2, user_acc = UserAcc2, limit = NewLimit
+        seq = EndSeq, prepend = Prepend2, user_acc = UserAcc2, changes_sent = Sent, limit = NewLimit
     } = ChangesAcc,
 
     couch_db:close(Db),
     if Limit > NewLimit, ResponseType == "longpoll" ->
         end_sending_changes(Callback, UserAcc2, EndSeq, ResponseType);
     true ->
-        case wait_db_updated(Timeout, TimeoutFun, UserAcc2) of
-        {updated, UserAcc3} ->
-            % ?LOG_INFO("wait_db_updated updated ~p",[{Db#db.name, EndSeq}]),
-            DbOptions1 = [{user_ctx, Db#db.user_ctx} | DbOptions],
-            case couch_db:open(Db#db.name, DbOptions1) of
-            {ok, Db2} ->
-                keep_sending_changes(
-                    Args#changes_args{limit=NewLimit},
-                    Callback,
-                    UserAcc3,
-                    Db2,
-                    EndSeq,
-                    Prepend2,
-                    Timeout,
-                    TimeoutFun,
-                    false
-                );
-            _Else ->
-                end_sending_changes(Callback, UserAcc2, EndSeq, ResponseType)
-            end;
-        {stop, UserAcc3} ->
-            % ?LOG_INFO("wait_db_updated stop ~p",[{Db#db.name, EndSeq}]),
-            end_sending_changes(Callback, UserAcc3, EndSeq, ResponseType)
+        {Done, UserAcc3} = maybe_timeout(Sent, Timeout, TimeoutFun, UserAcc2),
+        if Done ->
+            end_sending_changes(Callback, UserAcc3, EndSeq, ResponseType),
+            ok;
+           true ->
+            case wait_db_updated(Timeout, TimeoutFun, UserAcc3) of
+            {updated, UserAcc4} ->
+                % ?LOG_INFO("wait_db_updated updated ~p",[{Db#db.name, EndSeq}]),
+                DbOptions1 = [{user_ctx, Db#db.user_ctx} | DbOptions],
+                case couch_db:open(Db#db.name, DbOptions1) of
+                {ok, Db2} ->
+                    keep_sending_changes(
+                      Args#changes_args{limit=NewLimit},
+                      Callback,
+                      UserAcc4,
+                      Db2,
+                      EndSeq,
+                      Prepend2,
+                      Timeout,
+                      TimeoutFun,
+                      false);
+                _Else ->
+                    end_sending_changes(Callback, UserAcc2, EndSeq, ResponseType)
+                end;
+            {stop, UserAcc4} ->
+                % ?LOG_INFO("wait_db_updated stop ~p",[{Db#db.name, EndSeq}]),
+                end_sending_changes(Callback, UserAcc4, EndSeq, ResponseType)
+            end
         end
     end.
 
@@ -428,6 +436,7 @@ changes_enumerator(DocInfo, #changes_acc{resp_type = "continuous"} = Acc) ->
     #doc_info{high_seq = Seq} = DocInfo,
     Results0 = FilterFun(Db, DocInfo),
     Results = [Result || Result <- Results0, Result /= null],
+    %% TODO: I'm thinking this should be < 1 and not =< 1
     Go = if Limit =< 1 -> stop; true -> ok end,
     case Results of
     [] ->
@@ -435,7 +444,7 @@ changes_enumerator(DocInfo, #changes_acc{resp_type = "continuous"} = Acc) ->
     _ ->
         ChangesRow = changes_row(Results, DocInfo, Acc),
         UserAcc2 = Callback({change, ChangesRow, <<>>}, "continuous", UserAcc),
-        {Go, Acc#changes_acc{seq = Seq, user_acc = UserAcc2, limit = Limit - 1}}
+        {Go, Acc#changes_acc{seq = Seq, changes_sent = true, user_acc = UserAcc2, limit = Limit - 1}}
     end;
 changes_enumerator(DocInfo, Acc) ->
     #changes_acc{
@@ -503,4 +512,20 @@ get_rest_db_updated(UserAcc) ->
         get_rest_db_updated(UserAcc)
     after 0 ->
         {updated, UserAcc}
+    end.
+
+maybe_timeout(true, Timeout, TimeoutFun, Acc) ->
+    put(changes_timeout, now()),
+    {false, Acc};
+
+maybe_timeout(false, Timeout, TimeoutFun, Acc) ->
+    Now = now(),
+    Before = get(changes_timeout),
+    case timer:now_diff(Now, Before) div 1000 >= Timeout of
+    true ->
+        Acc2 = TimeoutFun(Acc),
+        put(changes_timeout, Now),
+        Acc2;
+    false ->
+        {false, Acc}
     end.
