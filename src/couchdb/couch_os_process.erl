@@ -15,7 +15,8 @@
 
 -export([start_link/1, start_link/2, start_link/3, stop/1]).
 -export([set_timeout/2, prompt/2]).
--export([send/2, writeline/2, readline/1, writejson/2, readjson/1]).
+-export([writeline/2, readline/1, writejson/2, readjson/1]).
+-export([send/2, nb_send/2, set_receiver/2]).
 -export([init/1, terminate/2, handle_call/3, handle_cast/2, handle_info/2, code_change/3]).
 
 -include("couch_db.hrl").
@@ -27,7 +28,9 @@
      port,
      writer,
      reader,
-     timeout=5000
+     timeout=5000,
+     receiver=nil,
+     data_acc=[]
     }).
 
 start_link(Command) ->
@@ -44,9 +47,28 @@ stop(Pid) ->
 set_timeout(Pid, TimeOut) when is_integer(TimeOut) ->
     ok = gen_server:call(Pid, {set_timeout, TimeOut}, infinity).
 
-% Used by couch_db_update_notifier.erl
-send(Pid, Data) ->
+% Non-blocking send. Used by couch_db_update_notifier.erl
+nb_send(Pid, Data) ->
     gen_server:cast(Pid, {send, Data}).
+
+% To be used together with set_receiver/2. The OS process replies to the
+% requests sent by the caller of this function are delivered to the process
+% defined by set_receiver/2.
+send(Pid, Data) ->
+    case get({os_proc, Pid}) of
+    undefined ->
+        #os_proc{writer = Writer} = OsProc =
+            gen_server:call(Pid, get_os_proc, infinity),
+        put({os_proc, Pid}, OsProc);
+    #os_proc{writer = Writer} = OsProc ->
+        ok
+    end,
+    Writer(OsProc, Data).
+
+% To be used together with send/2. Sets the receiver process for the
+% responses to the requests sent by the process which invokes send/2.
+set_receiver(Pid, ReceiverPid) ->
+    ok = gen_server:cast(Pid, {set_receiver, ReceiverPid}).
 
 prompt(Pid, Data) ->
     case gen_server:call(Pid, {prompt, Data}, infinity) of
@@ -105,20 +127,21 @@ readjson(OsProc) when is_record(OsProc, os_proc) ->
     throw:abort ->
         {json, Line};
     throw:{cmd, _Cmd} ->
-        case ?JSON_DECODE(Line) of
-        [<<"log">>, Msg] when is_binary(Msg) ->
-            % we got a message to log. Log it and continue
-            ?LOG_INFO("OS Process ~p Log :: ~s", [OsProc#os_proc.port, Msg]),
-            readjson(OsProc);
-        [<<"error">>, Id, Reason] ->
-            throw({error, {couch_util:to_existing_atom(Id),Reason}});
-        [<<"fatal">>, Id, Reason] ->
-            ?LOG_INFO("OS Process ~p Fatal Error :: ~s ~p",
-                [OsProc#os_proc.port, Id, Reason]),
-            throw({couch_util:to_existing_atom(Id),Reason});
-        _Result ->
-            {json, Line}
-        end
+        exec_command(Line, OsProc),
+        readjson(OsProc)
+    end.
+
+exec_command(Line, OsProc) ->
+    case ?JSON_DECODE(Line) of
+    [<<"log">>, Msg] when is_binary(Msg) ->
+        % we got a message to log. Log it and continue
+        ?LOG_INFO("OS Process ~p Log :: ~s", [OsProc#os_proc.port, Msg]);
+    [<<"error">>, Id, Reason] ->
+        throw({error, {couch_util:to_existing_atom(Id),Reason}});
+    [<<"fatal">>, Id, Reason] ->
+        ?LOG_INFO("OS Process ~p Fatal Error :: ~s ~p",
+            [OsProc#os_proc.port, Id, Reason]),
+        throw({couch_util:to_existing_atom(Id),Reason})
     end.
 
 pick_command(Line) ->
@@ -175,6 +198,8 @@ terminate(_Reason, #os_proc{port=Port}) ->
     catch port_close(Port),
     ok.
 
+handle_call(get_os_proc, _From, OsProc) ->
+    {reply, OsProc, OsProc};
 handle_call({set_timeout, TimeOut}, _From, OsProc) ->
     {reply, ok, OsProc#os_proc{timeout=TimeOut}};
 handle_call({prompt, Data}, _From, OsProc) ->
@@ -189,6 +214,8 @@ handle_call({prompt, Data}, _From, OsProc) ->
             {stop, normal, OtherError, OsProc}
     end.
 
+handle_cast({set_receiver, ReceiverPid}, OsProc) ->
+    {noreply, OsProc#os_proc{receiver=ReceiverPid}};
 handle_cast({send, Data}, #os_proc{writer=Writer}=OsProc) ->
     try
         Writer(OsProc, Data),
@@ -209,7 +236,52 @@ handle_info({Port, {exit_status, 0}}, #os_proc{port=Port}=OsProc) ->
     {stop, normal, OsProc};
 handle_info({Port, {exit_status, Status}}, #os_proc{port=Port}=OsProc) ->
     ?LOG_ERROR("OS Process died with status: ~p", [Status]),
-    {stop, {exit_status, Status}, OsProc}.
+    case is_pid(OsProc#os_proc.receiver) of
+    true ->
+        OsProc#os_proc.receiver ! {error, {os_proc_exit_status, Status}};
+    false ->
+        ok
+    end,
+    {stop, {exit_status, Status}, OsProc};
+handle_info({Port, {data, {noeol, Data}}}, #os_proc{port = Port} = OsProc) ->
+    case is_pid(OsProc#os_proc.receiver) of
+    true ->
+        DataAcc2 = [Data | OsProc#os_proc.data_acc],
+        {noreply, OsProc#os_proc{data_acc = DataAcc2}};
+    false ->
+        {stop, {unexpected_data, Data}, OsProc}
+    end;
+handle_info({Port, {data, {eol, Data}}}, #os_proc{port = Port} = OsProc) ->
+    case is_pid(OsProc#os_proc.receiver) of
+    true ->
+        #os_proc{receiver = Receiver, data_acc = DataAcc} = OsProc,
+        Line = lists:reverse(DataAcc, [Data]),
+        try
+            pick_command(Line)
+        catch
+        throw:abort ->
+            Receiver ! {result, self(), {json, Line}},
+            {noreply, OsProc#os_proc{data_acc = []}};
+        throw:{cmd, _Cmd} ->
+            try
+                exec_command(Line, OsProc),
+                {noreply, OsProc#os_proc{data_acc = []}}
+            catch
+            throw:{error, OsError} ->
+                Receiver ! {result, self(), {error, OsError}},
+                {noreply, OsProc#os_proc{data_acc = []}};
+            throw:OtherError ->
+                Receiver ! {result, self(), {error, OtherError}},
+                {stop, normal, OsProc}
+            end
+        end;
+    false ->
+        {stop, {unexpected_data, Data}, OsProc}
+    end;
+handle_info({Port, Error}, #os_proc{port = Port, receiver = Receiver} = OsProc)
+        when is_pid(Receiver) ->
+    Receiver ! {result, self(), {error, Error}},
+    {stop, Error, OsProc}.
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.

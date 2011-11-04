@@ -19,6 +19,7 @@
 -define(QUEUE_MAX_ITEMS, 500).
 -define(QUEUE_MAX_SIZE, 100000).
 -define(MIN_FLUSH_BATCH_SIZE, 100).
+-define(MIN_MAP_BATCH_SIZE, 100).
 
 -spec update(_, #group{}, Dbname::binary()) -> no_return().
 
@@ -51,7 +52,7 @@ update(Owner, Group, #db{name = DbName} = Db) ->
         [{max_size, ?QUEUE_MAX_SIZE}, {max_items, ?QUEUE_MAX_ITEMS}]),
     Self = self(),
     spawn_link(fun() ->
-        do_maps(add_query_server(Group), MapQueue, WriteQueue)
+        do_maps(add_query_server(Group), MapQueue, WriteQueue, [])
     end),
     TotalChanges = couch_db:count_changes_since(Db, Seq),
     spawn_link(fun() ->
@@ -161,12 +162,28 @@ load_doc(Db, DocInfo, MapQueue, DocOpts, IncludeDesign) ->
         end
     end.
     
-do_maps(#group{query_server = Qs} = Group, MapQueue, WriteQueue) ->
+do_maps(#group{query_server = Qs} = Group, MapQueue, WriteQueue, Acc) ->
     case couch_work_queue:dequeue(MapQueue) of
     closed ->
+        compute_map_results(Group, WriteQueue, Acc),
         couch_work_queue:close(WriteQueue),
-        couch_query_servers:stop_doc_map(Group#group.query_server);
+        couch_query_servers:stop_doc_map(Qs);
     {ok, Queue} ->
+        Acc2 = Acc ++ Queue,
+        case length(Acc2) >= ?MIN_MAP_BATCH_SIZE of
+        true ->
+            compute_map_results(Group, WriteQueue, Acc2),
+            do_maps(Group, MapQueue, WriteQueue, []);
+        false ->
+            do_maps(Group, MapQueue, WriteQueue, Acc2)
+        end
+    end.
+
+compute_map_results(_Group, _WriteQueue, []) ->
+    ok;
+compute_map_results(#group{query_server = Qs}, WriteQueue, Queue) ->
+    case couch_query_servers:is_native(Qs) of
+    true ->
         lists:foreach(
             fun({Seq, #doc{id = Id, deleted = true}}) ->
                 Item = {Seq, Id, []},
@@ -176,8 +193,40 @@ do_maps(#group{query_server = Qs} = Group, MapQueue, WriteQueue) ->
                 Item = {Seq, Id, Result},
                 ok = couch_work_queue:queue(WriteQueue, Item)
             end,
+            Queue);
+    false ->
+        {Deleted, NotDeleted} = lists:partition(
+            fun({_Seq, Doc}) -> Doc#doc.deleted end,
             Queue),
-        do_maps(Group, MapQueue, WriteQueue)
+        NotDeletedDocs = [Doc || {_Seq, Doc} <- NotDeleted],
+        {MapReceiver, MonRef} = spawn_monitor(fun() ->
+            map_results_receiver(Qs, WriteQueue, NotDeleted)
+        end),
+        couch_query_servers:map_docs_raw(Qs, NotDeletedDocs, MapReceiver),
+        lists:foreach(
+            fun({Seq, #doc{id = Id, deleted = true}}) ->
+                Item = {Seq, Id, []},
+                ok = couch_work_queue:queue(WriteQueue, Item)
+            end,
+            Deleted),
+        receive
+        {'DOWN', MonRef, _, _, normal} ->
+            ok;
+        {'DOWN', MonRef, _, _, Reason} ->
+            throw(Reason)
+        end
+    end.
+
+map_results_receiver(_Qs, _WriteQueue, []) ->
+    ok;
+map_results_receiver(Qs, WriteQueue, [{Seq, Doc} | Rest]) ->
+    case couch_query_servers:receive_doc_map_result(Qs) of
+    {ok, MapResults} ->
+        Item = {Seq, Doc#doc.id, MapResults},
+        ok = couch_work_queue:queue(WriteQueue, Item),
+        map_results_receiver(Qs, WriteQueue, Rest);
+    Error ->
+        exit(Error)
     end.
 
 do_writes(Parent, Owner, Group, WriteQueue, InitialBuild, ViewEmptyKVs, Acc) ->

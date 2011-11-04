@@ -154,7 +154,8 @@ couchTests.view_errors = function(debug) {
           db.view("infinite/infinite_loop");
           T(0 == 1);
       } catch(e) {
-          T(e.error == "os_process_error");
+          T(e.error == "query_server_error");
+          T(e.reason == "timeout");
       }
 
       // Check error responses for invalid multi-get bodies.

@@ -20,6 +20,7 @@
 -export([reduce/3, rereduce/3,validate_doc_update/5]).
 -export([filter_docs/5]).
 -export([filter_view/3]).
+-export([map_docs_raw/3, receive_doc_map_result/1, is_native/1]).
 
 -export([with_ddoc_proc/2, proc_prompt/2, ddoc_prompt/3, ddoc_proc_prompt/3, json_doc/1]).
 
@@ -31,9 +32,11 @@
 -record(proc, {
     pid,
     lang,
+    is_native = false,
     ddoc_keys = [],
     prompt_fun,
     set_timeout_fun,
+    timeout = 5000,
     stop_fun
 }).
 
@@ -48,6 +51,9 @@
 
 start_link() ->
     gen_server:start_link({local, couch_query_servers}, couch_query_servers, [], []).
+
+is_native(#proc{is_native = IsNative}) ->
+    IsNative.
 
 start_doc_map(Lang, Functions, Lib) ->
     Proc = get_os_process(Lang),
@@ -83,14 +89,39 @@ map_docs(Proc, Docs) ->
         Docs),
     {ok, Results}.
 
+map_docs_raw(#proc{is_native = false} = Proc, DocList, Receiver) ->
+    {Mod, _} = Proc#proc.prompt_fun,
+    ok = Mod:set_receiver(Proc#proc.pid, Receiver),
+    lists:foreach(
+        fun(Doc) ->
+            EJson = couch_doc:to_json_obj(Doc, []),
+            Mod:send(Proc#proc.pid, [<<"map_doc">>, EJson])
+        end,
+        DocList).
+
 map_doc_raw(Proc, Doc) ->
     Json = couch_doc:to_json_obj(Doc, []),
     {ok, proc_prompt_raw(Proc, [<<"map_doc">>, Json])}.
 
+receive_doc_map_result(#proc{timeout = Timeout, pid = Pid}) ->
+    receive
+    {result, Pid, {error, Error}} ->
+         {query_server_error, Error};
+    {result, Pid, QueryResult} ->
+        {ok, QueryResult}
+    after Timeout ->
+        {query_server_error, timeout}
+    end.
 
 stop_doc_map(nil) ->
     ok;
-stop_doc_map(Proc) ->
+stop_doc_map(#proc{is_native = IsNative, prompt_fun = {Mod, _}} = Proc) ->
+    case IsNative of
+    true ->
+        ok;
+    false ->
+        ok = Mod:set_receiver(Proc#proc.pid, nil)
+    end,
     ok = ret_os_process(Proc).
 
 group_reductions_results([]) ->
@@ -475,8 +506,10 @@ new_process(Langs, LangLimits, Lang) ->
             {ok, Pid} = apply(Mod, Func, Arg),
             erlang:monitor(process, Pid),
             true = ets:insert(LangLimits, {Lang, Lim, Current+1}),
+            IsNative = is_list(couch_config:get("native_query_servers", ?b2l(Lang))),
             {ok, #proc{lang=Lang,
                        pid=Pid,
+                       is_native=IsNative,
                        % Called via proc_prompt, proc_set_timeout, and proc_stop
                        prompt_fun={Mod, prompt},
                        set_timeout_fun={Mod, set_timeout},
@@ -547,10 +580,11 @@ get_ddoc_process(#doc{} = DDoc, DDocKey) ->
         % process knows the ddoc
         case (catch proc_prompt(Proc, [<<"reset">>, {QueryConfig}])) of
         true ->
-            proc_set_timeout(Proc, couch_util:get_value(<<"timeout">>, QueryConfig)),
+            Timeout = couch_util:get_value(<<"timeout">>, QueryConfig),
+            proc_set_timeout(Proc, Timeout),
             link(Proc#proc.pid),
             gen_server:call(couch_query_servers, {unlink_proc, Proc#proc.pid}, infinity),
-            Proc;
+            Proc#proc{timeout = Timeout};
         _ ->
             catch proc_stop(Proc),
             get_ddoc_process(DDoc, DDocKey)
@@ -564,10 +598,11 @@ get_os_process(Lang) ->
     {ok, Proc, {QueryConfig}} ->
         case (catch proc_prompt(Proc, [<<"reset">>, {QueryConfig}])) of
         true ->
-            proc_set_timeout(Proc, couch_util:get_value(<<"timeout">>, QueryConfig)),
+            Timeout = couch_util:get_value(<<"timeout">>, QueryConfig),
+            proc_set_timeout(Proc, Timeout),
             link(Proc#proc.pid),
             gen_server:call(couch_query_servers, {unlink_proc, Proc#proc.pid}, infinity),
-            Proc;
+            Proc#proc{timeout = Timeout};
         _ ->
             catch proc_stop(Proc),
             get_os_process(Lang)

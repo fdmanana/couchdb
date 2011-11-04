@@ -55,7 +55,7 @@ handle_event(Event, {Fun, FunAcc}) ->
     {ok, {Fun, FunAcc2}};
 handle_event({EventAtom, DbName}, Pid) ->
     Obj = {[{type, list_to_binary(atom_to_list(EventAtom))}, {db, DbName}]},
-    ok = couch_os_process:send(Pid, Obj),
+    ok = couch_os_process:nb_send(Pid, Obj),
     {ok, Pid}.
 
 handle_call(_Request, State) ->
