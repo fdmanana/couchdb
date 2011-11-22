@@ -51,7 +51,7 @@ test_db_name() -> <<"couch_test_changes">>.
 main(_) ->
     test_util:init_code_path(),
 
-    etap:plan(39),
+    etap:plan(40),
     case (catch test()) of
         ok ->
             etap:end_tests();
@@ -69,6 +69,7 @@ test() ->
     test_by_doc_ids_with_since(),
     test_by_doc_ids_continuous(),
     test_design_docs_only(),
+    test_heartbeat(),
 
     couch_server_sup:stop(),
     ok.
@@ -314,6 +315,50 @@ test_design_docs_only() ->
     stop(Consumer2),
     delete_db(Db).
 
+test_heartbeat() ->
+    {ok, Db} = create_db(test_db_name()),
+
+
+    {ok, Rev3} = save_doc(Db, {[{<<"_id">>, <<"_design/foo">>},
+                                {<<"language">>, <<"javascript">>},
+        {<<"filters">>, {[
+            {<<"foo">>, <<"function(doc) { return false; }">>}]}}
+        ]}),
+
+    ChangesArgs = #changes_args{
+        filter = "foo/foo",
+        feed = "continuous"
+    },
+    Consumer = spawn_consumer_heart(test_db_name(), ChangesArgs, {json_req, null}),
+
+    {ok, _Rev1} = save_doc(Db, {[{<<"_id">>, <<"doc1">>}]}),
+    timer:sleep(500),
+    {ok, _Rev2} = save_doc(Db, {[{<<"_id">>, <<"doc2">>}]}),
+    timer:sleep(500),
+    {ok, _Rev3} = save_doc(Db, {[{<<"_id">>, <<"doc3">>}]}),
+    timer:sleep(500),
+    {ok, _Rev4} = save_doc(Db, {[{<<"_id">>, <<"doc4">>}]}),
+    timer:sleep(500),
+    {ok, _Rev5} = save_doc(Db, {[{<<"_id">>, <<"doc5">>}]}),
+    timer:sleep(500),
+    {ok, _Rev6} = save_doc(Db, {[{<<"_id">>, <<"doc6">>}]}),
+    timer:sleep(500),
+    {ok, _Rev7} = save_doc(Db, {[{<<"_id">>, <<"doc7">>}]}),
+    timer:sleep(500),
+    {ok, _Rev8} = save_doc(Db, {[{<<"_id">>, <<"doc8">>}]}),
+    timer:sleep(500),
+    {ok, _Rev9} = save_doc(Db, {[{<<"_id">>, <<"doc9">>}]}),
+    timer:sleep(500),
+
+    Heartbeats2 = get_heartbeats(Consumer),
+
+
+    etap:is(length(Heartbeats2), 5, "Received 4 heartbeats now"),
+
+    stop(Consumer),
+    couch_db:close(Db),
+    delete_db(Db).
+
 
 save_doc(Db, Json) ->
     Doc = couch_doc:from_json_obj(Json),
@@ -329,6 +374,16 @@ get_rows(Consumer) ->
         Rows
     after 3000 ->
         etap:bail("Timeout getting rows from consumer")
+    end.
+
+get_heartbeats(Consumer) ->
+    Ref = make_ref(),
+    Consumer ! {get_heartbeats, Ref},
+    receive
+    {rows, Ref, Rows} ->
+        Rows
+    after 3000 ->
+        etap:bail("Timeout getting heartbeats from consumer")
     end.
 
 
@@ -410,10 +465,40 @@ spawn_consumer(DbName, ChangesArgs0, Req) ->
         catch couch_db:close(Db)
     end).
 
+spawn_consumer_heart(DbName, ChangesArgs0, Req) ->
+    Parent = self(),
+    spawn(fun() ->
+        Callback = fun({change, {Change}, _}, _, Acc) ->
+            Id = couch_util:get_value(<<"id">>, Change),
+            Seq = couch_util:get_value(<<"seq">>, Change),
+            Del = couch_util:get_value(<<"deleted">>, Change, false),
+            [#row{id = Id, seq = Seq, deleted = Del} | Acc];
+        ({stop, LastSeq}, _, Acc) ->
+            Parent ! {consumer_finished, lists:reverse(Acc), LastSeq},
+            stop_loop(Parent, Acc);
+        (timeout, "continuous", Acc) ->
+            maybe_pause(Parent, [#row{} | Acc]);
+        (_, _, Acc) ->
+            maybe_pause(Parent, Acc)
+        end,
+        {ok, Db} = couch_db:open_int(DbName, []),
+        ChangesArgs = ChangesArgs0#changes_args{timeout = 10000, heartbeat = 1000},
+        FeedFun = couch_changes:handle_changes(ChangesArgs, Req, Db),
+        try
+            FeedFun({Callback, []})
+        catch throw:{stop, _} ->
+            ok
+        end,
+        catch couch_db:close(Db)
+    end).
+
 
 maybe_pause(Parent, Acc) ->
     receive
     {get_rows, Ref} ->
+        Parent ! {rows, Ref, lists:reverse(Acc)},
+        maybe_pause(Parent, Acc);
+    {get_heartbeats, Ref} ->
         Parent ! {rows, Ref, lists:reverse(Acc)},
         maybe_pause(Parent, Acc);
     {reset, Ref} ->
