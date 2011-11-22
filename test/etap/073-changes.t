@@ -318,18 +318,21 @@ test_design_docs_only() ->
 test_heartbeat() ->
     {ok, Db} = create_db(test_db_name()),
 
-
-    {ok, Rev3} = save_doc(Db, {[{<<"_id">>, <<"_design/foo">>},
-                                {<<"language">>, <<"javascript">>},
-        {<<"filters">>, {[
-            {<<"foo">>, <<"function(doc) { return false; }">>}]}}
-        ]}),
+    {ok, Rev3} = save_doc(Db, {[
+        {<<"_id">>, <<"_design/foo">>},
+        {<<"language">>, <<"javascript">>},
+            {<<"filters">>, {[
+                {<<"foo">>, <<"function(doc) { return false; }">>
+            }]}}
+    ]}),
 
     ChangesArgs = #changes_args{
         filter = "foo/foo",
-        feed = "continuous"
+        feed = "continuous",
+        timeout = 10000,
+        heartbeat = 1000
     },
-    Consumer = spawn_consumer_heart(test_db_name(), ChangesArgs, {json_req, null}),
+    Consumer = spawn_consumer(test_db_name(), ChangesArgs, {json_req, null}),
 
     {ok, _Rev1} = save_doc(Db, {[{<<"_id">>, <<"doc1">>}]}),
     timer:sleep(500),
@@ -350,10 +353,9 @@ test_heartbeat() ->
     {ok, _Rev9} = save_doc(Db, {[{<<"_id">>, <<"doc9">>}]}),
     timer:sleep(500),
 
-    Heartbeats2 = get_heartbeats(Consumer),
+    Heartbeats = get_heartbeats(Consumer),
 
-
-    etap:is(length(Heartbeats2), 5, "Received 4 heartbeats now"),
+    etap:is(Heartbeats, 5, "Received 5 heartbeats now"),
 
     stop(Consumer),
     couch_db:close(Db),
@@ -380,8 +382,8 @@ get_heartbeats(Consumer) ->
     Ref = make_ref(),
     Consumer ! {get_heartbeats, Ref},
     receive
-    {rows, Ref, Rows} ->
-        Rows
+    {hearthbeats, Ref, HeartBeats} ->
+        HeartBeats
     after 3000 ->
         etap:bail("Timeout getting heartbeats from consumer")
     end.
@@ -443,6 +445,7 @@ wait_finished(_Consumer) ->
 spawn_consumer(DbName, ChangesArgs0, Req) ->
     Parent = self(),
     spawn(fun() ->
+        put(heartbeat_count, 0),
         Callback = fun({change, {Change}, _}, _, Acc) ->
             Id = couch_util:get_value(<<"id">>, Change),
             Seq = couch_util:get_value(<<"seq">>, Change),
@@ -451,38 +454,20 @@ spawn_consumer(DbName, ChangesArgs0, Req) ->
         ({stop, LastSeq}, _, Acc) ->
             Parent ! {consumer_finished, lists:reverse(Acc), LastSeq},
             stop_loop(Parent, Acc);
+        (timeout, _, Acc) ->
+            put(heartbeat_count, get(heartbeat_count) + 1),
+            maybe_pause(Parent, Acc);
         (_, _, Acc) ->
             maybe_pause(Parent, Acc)
         end,
         {ok, Db} = couch_db:open_int(DbName, []),
-        ChangesArgs = ChangesArgs0#changes_args{timeout = 10, heartbeat = 10},
-        FeedFun = couch_changes:handle_changes(ChangesArgs, Req, Db),
-        try
-            FeedFun({Callback, []})
-        catch throw:{stop, _} ->
-            ok
+        ChangesArgs = case (ChangesArgs0#changes_args.timeout =:= undefined)
+            andalso (ChangesArgs0#changes_args.heartbeat =:= undefined) of
+        true ->
+            ChangesArgs0#changes_args{timeout = 10, heartbeat = 10};
+        false ->
+            ChangesArgs0
         end,
-        catch couch_db:close(Db)
-    end).
-
-spawn_consumer_heart(DbName, ChangesArgs0, Req) ->
-    Parent = self(),
-    spawn(fun() ->
-        Callback = fun({change, {Change}, _}, _, Acc) ->
-            Id = couch_util:get_value(<<"id">>, Change),
-            Seq = couch_util:get_value(<<"seq">>, Change),
-            Del = couch_util:get_value(<<"deleted">>, Change, false),
-            [#row{id = Id, seq = Seq, deleted = Del} | Acc];
-        ({stop, LastSeq}, _, Acc) ->
-            Parent ! {consumer_finished, lists:reverse(Acc), LastSeq},
-            stop_loop(Parent, Acc);
-        (timeout, "continuous", Acc) ->
-            maybe_pause(Parent, [#row{} | Acc]);
-        (_, _, Acc) ->
-            maybe_pause(Parent, Acc)
-        end,
-        {ok, Db} = couch_db:open_int(DbName, []),
-        ChangesArgs = ChangesArgs0#changes_args{timeout = 10000, heartbeat = 1000},
         FeedFun = couch_changes:handle_changes(ChangesArgs, Req, Db),
         try
             FeedFun({Callback, []})
@@ -499,7 +484,7 @@ maybe_pause(Parent, Acc) ->
         Parent ! {rows, Ref, lists:reverse(Acc)},
         maybe_pause(Parent, Acc);
     {get_heartbeats, Ref} ->
-        Parent ! {rows, Ref, lists:reverse(Acc)},
+        Parent ! {hearthbeats, Ref, get(heartbeat_count)},
         maybe_pause(Parent, Acc);
     {reset, Ref} ->
         Parent ! {ok, Ref},
