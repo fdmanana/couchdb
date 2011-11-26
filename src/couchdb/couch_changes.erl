@@ -67,7 +67,7 @@ handle_changes(Args1, Req, Db) ->
             ),
             UserAcc2 = start_sending_changes(Callback, UserAcc, Feed),
             {Timeout, TimeoutFun} = get_changes_timeout(Args, Callback),
-            Acc0 = build_acc(Args,Callback,UserAcc2,Db,StartSeq,
+            Acc0 = build_acc(Args, Callback, UserAcc2, Db, StartSeq,
                              <<"">>, Timeout, TimeoutFun),
             try
                 keep_sending_changes(
@@ -84,8 +84,8 @@ handle_changes(Args1, Req, Db) ->
             {Callback, UserAcc} = get_callback_acc(CallbackAcc),
             UserAcc2 = start_sending_changes(Callback, UserAcc, Feed),
             {Timeout, TimeoutFun} = get_changes_timeout(Args, Callback),
-            Acc0 = build_acc(Args#changes_args{feed="normal"},Callback,
-                             UserAcc2,Db,StartSeq,<<>>,Timeout,TimeoutFun),
+            Acc0 = build_acc(Args#changes_args{feed="normal"}, Callback,
+                             UserAcc2, Db, StartSeq, <<>>, Timeout, TimeoutFun),
             {ok, #changes_acc{seq = LastSeq, user_acc = UserAcc3}} =
                 send_changes(
                     Args#changes_args{feed="normal"},
@@ -255,7 +255,7 @@ start_sending_changes(_Callback, UserAcc, "continuous") ->
 start_sending_changes(Callback, UserAcc, ResponseType) ->
     Callback(start, ResponseType, UserAcc).
 
-build_acc(Args,Callback,UserAcc,Db,StartSeq,Prepend,Timeout,TimeoutFun) ->
+build_acc(Args, Callback, UserAcc, Db, StartSeq, Prepend, Timeout, TimeoutFun) ->
     #changes_args{
         include_docs = IncludeDocs,
         conflicts = Conflicts,
@@ -436,7 +436,7 @@ changes_enumerator(DocInfo, #changes_acc{resp_type = "continuous"} = Acc) ->
     Go = if Limit =< 1 -> stop; true -> ok end,
     case Results of
     [] ->
-        {Done, UserAcc2} = maybe_timeout(false, Timeout, TimeoutFun, UserAcc),
+        {Done, UserAcc2} = maybe_timeout(Timeout, TimeoutFun, UserAcc),
         case Done of
         stop ->
             {stop, Acc#changes_acc{seq = Seq, user_acc = UserAcc2}};
@@ -446,6 +446,7 @@ changes_enumerator(DocInfo, #changes_acc{resp_type = "continuous"} = Acc) ->
     _ ->
         ChangesRow = changes_row(Results, DocInfo, Acc),
         UserAcc2 = Callback({change, ChangesRow, <<>>}, "continuous", UserAcc),
+        reset_timeout(),
         {Go, Acc#changes_acc{seq = Seq, user_acc = UserAcc2, limit = Limit - 1}}
     end;
 changes_enumerator(DocInfo, Acc) ->
@@ -460,7 +461,7 @@ changes_enumerator(DocInfo, Acc) ->
     Go = if (Limit =< 1) andalso Results =/= [] -> stop; true -> ok end,
     case Results of
     [] ->
-        {Done, UserAcc2} = maybe_timeout(false, Timeout, TimeoutFun, UserAcc),
+        {Done, UserAcc2} = maybe_timeout(Timeout, TimeoutFun, UserAcc),
         case Done of
         stop ->
             {stop, Acc#changes_acc{seq = Seq, user_acc = UserAcc2}};
@@ -470,6 +471,7 @@ changes_enumerator(DocInfo, Acc) ->
     _ ->
         ChangesRow = changes_row(Results, DocInfo, Acc),
         UserAcc2 = Callback({change, ChangesRow, Prepend}, ResponseType, UserAcc),
+        reset_timeout(),
         {Go, Acc#changes_acc{
             seq = Seq, prepend = <<",\n">>,
             user_acc = UserAcc2, limit = Limit - 1}}
@@ -523,11 +525,10 @@ get_rest_db_updated(UserAcc) ->
         {updated, UserAcc}
     end.
 
-maybe_timeout(true, _Timeout, _TimeoutFun, Acc) ->
-    put(changes_timeout, now()),
-    {ok, Acc};
+reset_timeout() ->
+    put(changes_timeout, now()).
 
-maybe_timeout(false, Timeout, TimeoutFun, Acc) ->
+maybe_timeout(Timeout, TimeoutFun, Acc) ->
     Now = now(),
     Before = get(changes_timeout),
     case timer:now_diff(Now, Before) div 1000 >= Timeout of
