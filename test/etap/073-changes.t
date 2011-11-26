@@ -51,7 +51,7 @@ test_db_name() -> <<"couch_test_changes">>.
 main(_) ->
     test_util:init_code_path(),
 
-    etap:plan(40),
+    etap:plan(43),
     case (catch test()) of
         ok ->
             etap:end_tests();
@@ -322,7 +322,13 @@ test_heartbeat() ->
         {<<"_id">>, <<"_design/foo">>},
         {<<"language">>, <<"javascript">>},
             {<<"filters">>, {[
-                {<<"foo">>, <<"function(doc) { return false; }">>
+                {<<"foo">>, <<"function(doc) { if ((doc._id == 'doc10') ||
+                                                  (doc._id == 'doc11') ||
+                                                  (doc._id == 'doc12')) {
+                                                return true;
+                                               } else {
+                                                  return false;
+                                               }}">>
             }]}}
     ]}),
 
@@ -335,28 +341,40 @@ test_heartbeat() ->
     Consumer = spawn_consumer(test_db_name(), ChangesArgs, {json_req, null}),
 
     {ok, _Rev1} = save_doc(Db, {[{<<"_id">>, <<"doc1">>}]}),
-    timer:sleep(500),
+    timer:sleep(200),
     {ok, _Rev2} = save_doc(Db, {[{<<"_id">>, <<"doc2">>}]}),
-    timer:sleep(500),
+    timer:sleep(200),
     {ok, _Rev3} = save_doc(Db, {[{<<"_id">>, <<"doc3">>}]}),
-    timer:sleep(500),
+    timer:sleep(200),
     {ok, _Rev4} = save_doc(Db, {[{<<"_id">>, <<"doc4">>}]}),
-    timer:sleep(500),
+    timer:sleep(200),
     {ok, _Rev5} = save_doc(Db, {[{<<"_id">>, <<"doc5">>}]}),
-    timer:sleep(500),
+    timer:sleep(200),
     {ok, _Rev6} = save_doc(Db, {[{<<"_id">>, <<"doc6">>}]}),
-    timer:sleep(500),
+    timer:sleep(200),
     {ok, _Rev7} = save_doc(Db, {[{<<"_id">>, <<"doc7">>}]}),
-    timer:sleep(500),
+    timer:sleep(200),
     {ok, _Rev8} = save_doc(Db, {[{<<"_id">>, <<"doc8">>}]}),
-    timer:sleep(500),
+    timer:sleep(200),
     {ok, _Rev9} = save_doc(Db, {[{<<"_id">>, <<"doc9">>}]}),
-    timer:sleep(500),
-
     Heartbeats = get_heartbeats(Consumer),
+    etap:is(Heartbeats, 2, "Received 2 heartbeats now"),
+    {ok, _Rev10} = save_doc(Db, {[{<<"_id">>, <<"doc10">>}]}),
+    timer:sleep(200),
+    {ok, _Rev11} = save_doc(Db, {[{<<"_id">>, <<"doc11">>}]}),
+    timer:sleep(200),
+    {ok, _Rev12} = save_doc(Db, {[{<<"_id">>, <<"doc12">>}]}),
+    Heartbeats2 = get_heartbeats(Consumer),
+    etap:is(Heartbeats2, 3, "Received 3 heartbeats now"),
+    Rows = get_rows(Consumer),
+    etap:is(length(Rows), 3, "Received 3 changes rows"),
 
-    etap:is(Heartbeats, 5, "Received 5 heartbeats now"),
-
+    {ok, _Rev13} = save_doc(Db, {[{<<"_id">>, <<"doc13">>}]}),
+    timer:sleep(200),
+    {ok, _Rev14} = save_doc(Db, {[{<<"_id">>, <<"doc14">>}]}),
+    timer:sleep(200),
+    Heartbeats3 = get_heartbeats(Consumer),
+    etap:is(Heartbeats3, 6, "Received 6 heartbeats now"),
     stop(Consumer),
     couch_db:close(Db),
     delete_db(Db).
@@ -458,6 +476,7 @@ spawn_consumer(DbName, ChangesArgs0, Req) ->
             put(heartbeat_count, get(heartbeat_count) + 1),
             maybe_pause(Parent, Acc);
         (_, _, Acc) ->
+
             maybe_pause(Parent, Acc)
         end,
         {ok, Db} = couch_db:open_int(DbName, []),
