@@ -52,7 +52,12 @@ handle_changes(Args1, Req, Db) ->
         Since
     end,
     % begin timer to deal with heartbeat when filter function fails
-    put(changes_timeout, now()),
+    case Args#changes_args.heartbeat of
+    undefined ->
+        erlang:erase(last_changes_heartbeat);
+    Val when is_integer(Val); Val =:= true ->
+        put(last_changes_heartbeat, now())
+    end,
 
     if Feed == "continuous" orelse Feed == "longpoll" ->
         fun(CallbackAcc) ->
@@ -436,7 +441,7 @@ changes_enumerator(DocInfo, #changes_acc{resp_type = "continuous"} = Acc) ->
     Go = if Limit =< 1 -> stop; true -> ok end,
     case Results of
     [] ->
-        {Done, UserAcc2} = maybe_timeout(Timeout, TimeoutFun, UserAcc),
+        {Done, UserAcc2} = maybe_heartbeat(Timeout, TimeoutFun, UserAcc),
         case Done of
         stop ->
             {stop, Acc#changes_acc{seq = Seq, user_acc = UserAcc2}};
@@ -461,7 +466,7 @@ changes_enumerator(DocInfo, Acc) ->
     Go = if (Limit =< 1) andalso Results =/= [] -> stop; true -> ok end,
     case Results of
     [] ->
-        {Done, UserAcc2} = maybe_timeout(Timeout, TimeoutFun, UserAcc),
+        {Done, UserAcc2} = maybe_heartbeat(Timeout, TimeoutFun, UserAcc),
         case Done of
         stop ->
             {stop, Acc#changes_acc{seq = Seq, user_acc = UserAcc2}};
@@ -528,14 +533,19 @@ get_rest_db_updated(UserAcc) ->
 reset_timeout() ->
     put(changes_timeout,now()).
 
-maybe_timeout(Timeout, TimeoutFun, Acc) ->
+maybe_heartbeat(Timeout, TimeoutFun, Acc) ->
     Now = now(),
-    Before = get(changes_timeout),
-    case timer:now_diff(Now, Before) div 1000 >= Timeout of
-    true ->
-        Acc2 = TimeoutFun(Acc),
-        put(changes_timeout, Now),
-        Acc2;
-    false ->
-        {ok, Acc}
+    Before = get(last_changes_heartbeat),
+    case Before of
+    undefined ->
+        {ok, Acc};
+    _ ->
+        case timer:now_diff(Now, Before) div 1000 >= Timeout of
+        true ->
+            Acc2 = TimeoutFun(Acc),
+            put(last_changes_heartbeat, Now),
+            Acc2;
+        false ->
+            {ok, Acc}
+        end
     end.
