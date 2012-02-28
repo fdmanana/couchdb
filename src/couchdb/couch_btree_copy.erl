@@ -12,7 +12,7 @@
 
 -module(couch_btree_copy).
 
--export([copy/3, file_sort_output_fun/3]).
+-export([copy/3, from_sorted_file/3, file_sort_output_fun/3]).
 
 -include("couch_db.hrl").
 
@@ -50,7 +50,45 @@ copy(Btree, Fd, Options) ->
     {_, LastUserAcc} = FinalAcc#acc.before_kv_write,
     {ok, CopyRootState, LastUserAcc}.
 
-% this will create a function suitable for receiving the output of
+
+from_sorted_file(EmptyBtree, SortedFileName, DestFd) ->
+    Acc = #acc{
+        btree = EmptyBtree,
+        fd = DestFd,
+        chunk_threshold = EmptyBtree#btree.chunk_threshold,
+        before_kv_write = nil
+    },
+    {ok, SourceFd} = file:open(SortedFileName, [read, raw, binary, read_ahead]),
+    {ok, Acc2} = try
+        sorted_file_fold(SourceFd, SortedFileName, Acc)
+    after
+        ok = file:close(SourceFd)
+    end,
+    {ok, CopyRootState, _FinalAcc} = finish_copy(Acc2),
+    {ok, CopyRootState}.
+
+
+sorted_file_fold(Fd, FileName, Acc) ->
+    case file:read(Fd, 4) of
+    {ok, <<Len:32>>} ->
+        case file:read(Fd, Len) of
+        {ok, KvBin} ->
+            Kv = binary_to_term(KvBin),
+            {ok, Acc2} = fold_copy(Kv, Len, Acc),
+            sorted_file_fold(Fd, FileName, Acc2);
+        eof ->
+            throw({unexpected_eof, FileName});
+        {error, Error} ->
+            throw({file_read_error, FileName, Error})
+        end;
+    eof ->
+        {ok, Acc};
+    {error, Error} ->
+        throw({file_read_error, FileName, Error})
+    end.
+
+
+% This will create a function suitable for receiving the output of
 % Erlang file_sorter:sort/2.
 file_sort_output_fun(OrigBtree, Fd, Options) ->
     Acc0 = #acc{
@@ -94,6 +132,8 @@ assemble(#acc{btree = #btree{assemble_kv = Assemble}}, Key, Value) ->
     Assemble(Key, Value).
 
 
+before_leaf_write(#acc{before_kv_write = nil} = Acc, KVs) ->
+    {KVs, Acc};
 before_leaf_write(#acc{before_kv_write = {Fun, UserAcc0}} = Acc, KVs) ->
     {NewKVs, NewUserAcc} = lists:mapfoldl(
         fun({K, V}, UAcc) ->
