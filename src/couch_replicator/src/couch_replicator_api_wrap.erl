@@ -68,9 +68,9 @@ db_open(#httpdb{} = Db1, _Options, Create) ->
     false ->
         ok;
     true ->
-        send_req(Db, [{method, put}], fun(_, _, _) -> ok end)
+        send_req(Db, [{method, "PUT"}], fun(_, _, _) -> ok end)
     end,
-    send_req(Db, [{method, head}],
+    send_req(Db, [{method, "HEAD"}],
         fun(200, _, _) ->
             {ok, Db};
         (401, _, _) ->
@@ -99,9 +99,8 @@ db_open(DbName, Options, Create) ->
         throw({unauthorized, DbName})
     end.
 
-db_close(#httpdb{httpc_pool = Pool}) ->
-    unlink(Pool),
-    ok = couch_replicator_httpc_pool:stop(Pool);
+db_close(#httpdb{} = HttpDb) ->
+    ok = couch_replicator_httpc:tear_down(HttpDb);
 db_close(DbName) ->
     catch couch_db:close(DbName).
 
@@ -121,7 +120,7 @@ get_db_info(#db{name = DbName, user_ctx = UserCtx}) ->
 ensure_full_commit(#httpdb{} = Db) ->
     send_req(
         Db,
-        [{method, post}, {path, "_ensure_full_commit"},
+        [{method, "POST"}, {path, "_ensure_full_commit"},
             {headers, [{"Content-Type", "application/json"}]}],
         fun(201, _, {Props}) ->
             {ok, get_value(<<"instance_start_time">>, Props)};
@@ -136,7 +135,7 @@ get_missing_revs(#httpdb{} = Db, IdRevs) ->
     JsonBody = {[{Id, couch_doc:revs_to_strs(Revs)} || {Id, Revs} <- IdRevs]},
     send_req(
         Db,
-        [{method, post}, {path, "_revs_diff"}, {body, ?JSON_ENCODE(JsonBody)},
+        [{method, "POST"}, {path, "_revs_diff"}, {body, ?JSON_ENCODE(JsonBody)},
             {headers, [{"Content-Type", "application/json"}]}],
         fun(200, _, {Props}) ->
             ConvertToNativeFun = fun({Id, {Result}}) ->
@@ -159,13 +158,17 @@ open_doc_revs(#httpdb{} = HttpDb, Id, Revs, Options, Fun, Acc) ->
     Path = encode_doc_id(Id),
     QArgs = options_to_query_args(
         HttpDb, Path, [revs, {open_revs, Revs} | Options]),
+    ReqOptions = [
+        {path, Path},
+        {qs, QArgs},
+        {lhttpc_options, [{partial_download, [{window_size, 2}]}]},
+        {headers, [{"Accept", "multipart/mixed"}]}
+    ],
     Self = self(),
     Streamer = spawn_link(fun() ->
             send_req(
                 HttpDb,
-                [{path, Path}, {qs, QArgs},
-                    {ibrowse_options, [{stream_to, {self(), once}}]},
-                    {headers, [{"Accept", "multipart/mixed"}]}],
+                ReqOptions,
                 fun(200, Headers, StreamDataFun) ->
                     remote_open_doc_revs_streamer_start(Self),
                     {<<"--">>, _, _} = couch_httpd:parse_multipart_request(
@@ -218,33 +221,43 @@ update_doc(#httpdb{} = HttpDb, #doc{id = DocId} = Doc, Options, Type) ->
           Doc, [revs, attachments, follows, att_encoding_info | Options])),
     {ContentType, Len} = couch_doc:len_doc_to_multi_part_stream(Boundary,
         JsonBytes, Doc#doc.atts, true),
-    Headers = case lists:member(delay_commit, Options) of
-    true ->
-        [{"X-Couch-Full-Commit", "false"}];
-    false ->
-        []
-    end ++ [{"Content-Type", ?b2l(ContentType)}, {"Content-Length", Len}],
-    Body = {fun stream_doc/1, {JsonBytes, Doc#doc.atts, Boundary, Len}},
-    send_req(
-        HttpDb,
-        [{method, put}, {path, encode_doc_id(DocId)},
-            {qs, QArgs}, {headers, Headers}, {body, Body}],
-        fun(Code, _, {Props}) when Code =:= 200 orelse Code =:= 201 ->
-                {ok, couch_doc:parse_rev(get_value(<<"rev">>, Props))};
-            (409, _, _) ->
-                throw(conflict);
-            (Code, _, {Props}) ->
-                case {Code, get_value(<<"error">>, Props)} of
-                {401, <<"unauthorized">>} ->
-                    throw({unauthorized, get_value(<<"reason">>, Props)});
-                {403, <<"forbidden">>} ->
-                    throw({forbidden, get_value(<<"reason">>, Props)});
-                {412, <<"missing_stub">>} ->
-                    throw({missing_stub, get_value(<<"reason">>, Props)});
-                {_, Error} ->
-                    {error, Error}
-                end
-        end);
+    Headers = [
+        {"Content-Type", ?b2l(ContentType)},
+        {"Content-Length", integer_to_list(Len)}
+    ],
+    ReqOptions = [
+        {method, "PUT"},
+        {path, encode_doc_id(DocId)},
+        {qs, QArgs},
+        {headers, maybe_add_delayed_commit(Headers, Options)},
+        {lhttpc_options, [{partial_upload, 2}]}
+    ],
+    SendDocFun = fun(Data, SendFun) ->
+        {ok, SendFun2} = SendFun(Data),
+        SendFun2
+    end,
+    ReqCallback = fun(UploadFun) ->
+        UploadFun2 = couch_doc:doc_to_multi_part_stream(
+            Boundary, JsonBytes, Doc#doc.atts, SendDocFun, UploadFun, true),
+        case UploadFun2(eof) of
+        {ok, Code, _Headers, {Props}} when Code =:= 200; Code =:= 201 ->
+            {ok, couch_doc:parse_rev(get_value(<<"rev">>, Props))};
+        {ok, 409, _Headers, _Body} ->
+            throw(conflict);
+        {ok, Code, _Headers, {Props}} ->
+            case {Code, get_value(<<"error">>, Props)} of
+            {401, <<"unauthorized">>} ->
+                throw({unauthorized, get_value(<<"reason">>, Props)});
+            {403, <<"forbidden">>} ->
+                throw({forbidden, get_value(<<"reason">>, Props)});
+            {412, <<"missing_stub">>} ->
+                throw({missing_stub, get_value(<<"reason">>, Props)});
+            {_, Error} ->
+                {error, Error}
+            end
+        end
+    end,
+    send_req(HttpDb, ReqOptions, ReqCallback);
 update_doc(Db, Doc, Options, Type) ->
     couch_db:update_doc(Db, Doc, Options, Type).
 
@@ -255,7 +268,6 @@ update_docs(Db, DocList, Options) ->
 update_docs(_Db, [], _Options, _UpdateType) ->
     {ok, []};
 update_docs(#httpdb{} = HttpDb, DocList, Options, UpdateType) ->
-    FullCommit = atom_to_list(not lists:member(delay_commit, Options)),
     Prefix = case UpdateType of
     replicated_changes ->
         <<"{\"new_edits\":false,\"docs\":[">>;
@@ -275,31 +287,37 @@ update_docs(#httpdb{} = HttpDb, DocList, Options, UpdateType) ->
         end,
         byte_size(Prefix) + byte_size(Suffix) + length(DocList) - 1,
         DocList),
-    BodyFun = fun(eof) ->
-            eof;
-        ([]) ->
-            {ok, Suffix, eof};
-        ([prefix | Rest]) ->
-            {ok, Prefix, Rest};
-        ([Doc]) ->
-            {ok, Doc, []};
-        ([Doc | RestDocs]) ->
-            {ok, [Doc, ","], RestDocs}
-    end,
     Headers = [
-        {"Content-Length", Len},
-        {"Content-Type", "application/json"},
-        {"X-Couch-Full-Commit", FullCommit}
+        {"Content-Length", integer_to_list(Len)},
+        {"Content-Type", "application/json"}
     ],
-    send_req(
-        HttpDb,
-        [{method, post}, {path, "_bulk_docs"},
-            {body, {BodyFun, [prefix | Docs]}}, {headers, Headers}],
-        fun(201, _, Results) when is_list(Results) ->
-                {ok, bulk_results_to_errors(DocList, Results, remote)};
-           (417, _, Results) when is_list(Results) ->
-                {ok, bulk_results_to_errors(DocList, Results, remote)}
-        end);
+    ReqOptions = [
+        {method, "POST"},
+        {path, "_bulk_docs"},
+        {headers, maybe_add_delayed_commit(Headers, Options)},
+        {lhttpc_options, [{partial_upload, 2}]}
+    ],
+    SendDocsFun = fun(Data, {SendFun, N}) ->
+        {ok, SendFun2} = case N > 1 of
+        true ->
+            SendFun([Data, <<",">>]);
+        false ->
+            SendFun(Data)
+        end,
+        {SendFun2, N - 1}
+    end,
+    ReqCallback = fun(UploadFun) ->
+        {ok, UploadFun2} = UploadFun(Prefix),
+        {UploadFun3, 0} = lists:foldl(SendDocsFun, {UploadFun2, length(Docs)}, Docs),
+        {ok, UploadFun4} = UploadFun3(Suffix),
+        case UploadFun4(eof) of
+        {ok, 201, _Headers, Results} ->
+            {ok, bulk_results_to_errors(DocList, Results, remote)};
+        {ok, 417, _Headers, Results} ->
+            {ok, bulk_results_to_errors(DocList, Results, remote)}
+        end
+    end,
+    send_req(HttpDb, ReqOptions, ReqCallback);
 update_docs(Db, DocList, Options, UpdateType) ->
     Result = couch_db:update_docs(Db, DocList, Options, UpdateType),
     {ok, bulk_results_to_errors(DocList, Result, UpdateType)}.
@@ -321,25 +339,36 @@ changes_since(#httpdb{headers = Headers1} = HttpDb, Style, StartSeq,
     {QArgs, Method, Body, Headers} = case DocIds of
     undefined ->
         QArgs1 = maybe_add_changes_filter_q_args(BaseQArgs, Options),
-        {QArgs1, get, [], Headers1};
+        {QArgs1, "GET", [], Headers1};
     _ when is_list(DocIds) ->
         Headers2 = [{"Content-Type", "application/json"} | Headers1],
         JsonDocIds = ?JSON_ENCODE({[{<<"doc_ids">>, DocIds}]}),
-        {[{"filter", "_doc_ids"} | BaseQArgs], post, JsonDocIds, Headers2}
+        {[{"filter", "_doc_ids"} | BaseQArgs], "POST", JsonDocIds, Headers2}
     end,
+    ReqOptions = [
+        {method, Method},
+        {path, "_changes"},
+        {body, Body},
+        {headers, Headers},
+        {qs, QArgs},
+        {lhttpc_options, [{partial_download, [{window_size, 2}]}]}
+    ],
     send_req(
         HttpDb,
-        [{method, Method}, {path, "_changes"}, {qs, QArgs},
-            {headers, Headers}, {body, Body},
-            {ibrowse_options, [{stream_to, {self(), once}}]}],
+        ReqOptions,
         fun(200, _, DataStreamFun) ->
                 parse_changes_feed(Options, UserFun, DataStreamFun);
             (405, _, _) when is_list(DocIds) ->
                 % CouchDB versions < 1.1.0 don't have the builtin _changes feed
                 % filter "_doc_ids" neither support POST
-                send_req(HttpDb, [{method, get}, {path, "_changes"},
-                    {qs, BaseQArgs}, {headers, Headers1},
-                    {ibrowse_options, [{stream_to, {self(), once}}]}],
+                Req2Options = [
+                    {method, "GET"},
+                    {path, "_changes"},
+                    {qs, BaseQArgs},
+                    {headers, Headers1},
+                    {lhttpc_options, [{partial_download, [{window_size, 2}]}]}
+                ],
+                send_req(HttpDb, Req2Options,
                     fun(200, _, DataStreamFun2) ->
                         UserFun2 = fun(#doc_info{id = Id} = DocInfo) ->
                             case lists:member(Id, DocIds) of
@@ -746,33 +775,10 @@ rev_to_str(Rev) ->
     Rev.
 
 
-stream_doc({JsonBytes, Atts, Boundary, Len}) ->
-    case erlang:erase({doc_streamer, Boundary}) of
-    Pid when is_pid(Pid) ->
-        unlink(Pid),
-        exit(Pid, kill);
-    _ ->
-        ok
-    end,
-    Self = self(),
-    DocStreamer = spawn_link(fun() ->
-        couch_doc:doc_to_multi_part_stream(
-            Boundary, JsonBytes, Atts,
-            fun(Data) ->
-                receive {get_data, Ref, From} ->
-                    From ! {data, Ref, Data}
-                end
-            end, true),
-        unlink(Self)
-    end),
-    erlang:put({doc_streamer, Boundary}, DocStreamer),
-    {ok, <<>>, {Len, Boundary}};
-stream_doc({0, Id}) ->
-    erlang:erase({doc_streamer, Id}),
-    eof;
-stream_doc({LenLeft, Id}) when LenLeft > 0 ->
-    Ref = make_ref(),
-    erlang:get({doc_streamer, Id}) ! {get_data, Ref, self()},
-    receive {data, Ref, Data} ->
-        {ok, Data, {LenLeft - iolist_size(Data), Id}}
+maybe_add_delayed_commit(Headers, Options) ->
+    case lists:member(delay_commit, Options) of
+    true ->
+        [{"X-Couch-Full-Commit", "false"} | Headers];
+    false ->
+        Headers
     end.

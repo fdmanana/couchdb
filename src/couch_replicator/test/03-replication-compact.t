@@ -83,7 +83,7 @@ main(_) ->
 
 test() ->
     couch_server_sup:start_link(test_util:config_files()),
-    ibrowse:start(),
+    ok = ssl:start(),
 
     Pairs = [
         {source_db_name(), target_db_name()},

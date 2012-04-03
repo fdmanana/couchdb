@@ -64,8 +64,7 @@ main(_) ->
 
 test() ->
     couch_server_sup:start_link(test_util:config_files()),
-    ibrowse:start(),
-    crypto:start(),
+    ok = ssl:start(),
     couch_config:set("attachments", "compressible_types", "text/*", false),
 
     Pairs = [

@@ -17,7 +17,8 @@
 -export([from_json_obj/1,to_json_obj/2,has_stubs/1, merge_stubs/2]).
 -export([validate_docid/1]).
 -export([doc_from_multi_part_stream/2]).
--export([doc_to_multi_part_stream/5, len_doc_to_multi_part_stream/4]).
+-export([len_doc_to_multi_part_stream/4]).
+-export([doc_to_multi_part_stream/5, doc_to_multi_part_stream/6]).
 -export([abort_multi_part_stream/1]).
 -export([to_path/1]).
 -export([mp_parse_doc/2]).
@@ -477,33 +478,38 @@ len_doc_to_multi_part_stream(Boundary, JsonBytes, Atts, SendEncodedAtts) ->
 
 doc_to_multi_part_stream(Boundary, JsonBytes, Atts, WriteFun,
     SendEncodedAtts) ->
+    WriteFun2 = fun(Chunk, _) -> WriteFun(Chunk) end,
+    doc_to_multi_part_stream(
+        Boundary, JsonBytes, Atts, WriteFun2, [], SendEncodedAtts).
+
+doc_to_multi_part_stream(Boundary, JsonBytes, Atts, WriteFun, Acc,
+    SendEncodedAtts) ->
     case lists:any(fun(#att{data=Data})-> Data /= stub end, Atts) of
     true ->
-        WriteFun([<<"--", Boundary/binary,
+        Acc2 = WriteFun([<<"--", Boundary/binary,
                 "\r\ncontent-type: application/json\r\n\r\n">>,
-                JsonBytes, <<"\r\n--", Boundary/binary>>]),
-        atts_to_mp(Atts, Boundary, WriteFun, SendEncodedAtts);
+                JsonBytes, <<"\r\n--", Boundary/binary>>], Acc),
+        atts_to_mp(Atts, Boundary, WriteFun, Acc2, SendEncodedAtts);
     false ->
-        WriteFun(JsonBytes)
+        WriteFun(JsonBytes, Acc)
     end.
 
-atts_to_mp([], _Boundary, WriteFun, _SendEncAtts) ->
-    WriteFun(<<"--">>);
-atts_to_mp([#att{data=stub} | RestAtts], Boundary, WriteFun,
+atts_to_mp([], _Boundary, WriteFun, Acc, _SendEncAtts) ->
+    WriteFun(<<"--">>, Acc);
+atts_to_mp([#att{data=stub} | RestAtts], Boundary, WriteFun, Acc,
         SendEncodedAtts) ->
-    atts_to_mp(RestAtts, Boundary, WriteFun, SendEncodedAtts);
-atts_to_mp([Att | RestAtts], Boundary, WriteFun,
-        SendEncodedAtts)  ->
-    WriteFun(<<"\r\n\r\n">>),
+    atts_to_mp(RestAtts, Boundary, WriteFun, Acc, SendEncodedAtts);
+atts_to_mp([Att | RestAtts], Boundary, WriteFun, Acc, SendEncodedAtts) ->
+    Acc2 = WriteFun(<<"\r\n\r\n">>, Acc),
     AttFun = case SendEncodedAtts of
     false ->
         fun att_foldl_decode/3;
     true ->
         fun att_foldl/3
     end,
-    AttFun(Att, fun(Data, _) -> WriteFun(Data) end, ok),
-    WriteFun(<<"\r\n--", Boundary/binary>>),
-    atts_to_mp(RestAtts, Boundary, WriteFun, SendEncodedAtts).
+    Acc3 = AttFun(Att, WriteFun, Acc2),
+    Acc4 = WriteFun(<<"\r\n--", Boundary/binary>>, Acc3),
+    atts_to_mp(RestAtts, Boundary, WriteFun, Acc4, SendEncodedAtts).
 
 
 doc_from_multi_part_stream(ContentType, DataFun) ->
