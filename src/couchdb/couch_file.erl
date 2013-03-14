@@ -324,6 +324,7 @@ maybe_create_file(Filepath, Options) ->
         file2:ensure_dir(Filepath),
         case file2:open(Filepath, [read, write, binary]) of
         {ok, Fd} ->
+            ok = file:advise(Fd, 0, 0, random),
             {ok, Length} = file:position(Fd, eof),
             case Length > 0 of
             true ->
@@ -639,6 +640,7 @@ spawn_reader(Filepath, CloseTimeout) ->
     case try_open_fd(Filepath, [binary, read, raw], ?RETRY_TIME_MS,
         ?MAX_RETRY_TIME_MS) of
     {ok, Fd} ->
+        ok = file:advise(Fd, 0, 0, random),
         proc_lib:init_ack({ok, self()}),
         process_flag(trap_exit, true),
         reader_loop(Fd, Filepath, CloseTimeout);

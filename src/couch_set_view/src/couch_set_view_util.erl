@@ -248,6 +248,7 @@ open_raw_read_fd(Group) ->
     } = Group,
     case file2:open(FileName, [read, raw, binary]) of
     {ok, RawReadFd} ->
+        ok = file:advise(RawReadFd, 0, 0, random),
         erlang:put({FilePid, fast_fd_read}, RawReadFd),
         ok;
     {error, Reason} ->

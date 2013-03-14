@@ -440,6 +440,7 @@ update_docs(Db, Docs) ->
 fast_reads(Db, Fun) ->
     case file2:open(Db#db.filepath, [binary, read, raw]) of
     {ok, FastReadFd} ->
+        ok = file:advise(FastReadFd, 0, 0, random),
         put({Db#db.fd, fast_fd_read}, FastReadFd),
         try
             Fun()
